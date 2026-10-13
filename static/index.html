@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#07070d">
+<title>HOLODRIVE</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/vendor/tokens.css">
+<style id="theme-vars"></style>
+<link rel="stylesheet" href="/static/ui.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body class="booting">
+<div class="bg-glow" aria-hidden="true"></div>
+<div class="bg-floor" aria-hidden="true"><div class="bg-floor-grid"></div></div>
+<div class="bg-scanlines" aria-hidden="true"></div>
+
+<!-- boot splash -->
+<div id="boot" class="boot" aria-hidden="true">
+  <img src="/static/holocube.svg" alt="" class="boot-cube" width="92" height="92">
+  <div class="boot-title glitch" data-text="HOLODRIVE">HOLODRIVE</div>
+  <pre class="boot-log" id="boot-log"></pre>
+</div>
+
+<!-- login -->
+<div id="login" class="login" hidden>
+  <form class="window login-window" id="login-form" autocomplete="on">
+    <div class="titlebar">
+      <span class="dot dot-a"></span><span class="dot dot-b"></span><span class="dot dot-c"></span>
+      <span class="titlebar-text">secure uplink</span>
+    </div>
+    <div class="login-body">
+      <img src="/static/holocube.svg" alt="" class="login-cube" width="76" height="76">
+      <h1 class="login-title glitch" data-text="HOLODRIVE">HOLODRIVE</h1>
+      <p class="login-host" id="login-host">blackbox</p>
+      <input type="text" name="username" autocomplete="username" value="holodrive" hidden>
+      <label class="field">
+        <span class="field-label">passphrase</span>
+        <input type="password" id="login-pass" name="password" autocomplete="current-password" required autofocus>
+      </label>
+      <button type="submit" class="btn btn-primary btn-wide" id="login-btn">⚡ Jack in</button>
+      <p class="login-msg" id="login-msg" role="alert"></p>
+    </div>
+  </form>
+</div>
+
+<!-- app -->
+<div id="app" class="app" hidden>
+  <header class="topbar">
+    <button type="button" class="icon-btn only-mobile" id="nav-toggle" title="Drives" aria-label="Drives">☰</button>
+    <a class="brand" href="#/" title="Holodrive">
+      <img src="/static/holocube.svg" alt="" class="brand-cube" width="34" height="34">
+      <span class="brand-word">HOLO<span class="brand-accent">DRIVE</span></span>
+      <span class="host-chip" id="host-chip"><span class="pulse"></span><span id="host-name">blackbox</span></span>
+    </a>
+    <form class="search" id="search-form" role="search">
+      <span class="search-icon">⌕</span>
+      <input type="search" id="search-input" placeholder="Search this drive…  ( / )" autocomplete="off">
+    </form>
+    <div class="topbar-right">
+      <div class="seg" role="group" aria-label="View">
+        <button type="button" class="seg-btn" data-view="grid" title="Grid (g)">▦</button>
+        <button type="button" class="seg-btn" data-view="list" title="List (l)">☰</button>
+      </div>
+      <div class="dropdown-wrap">
+        <button type="button" class="btn-ghost" id="theme-btn" aria-haspopup="listbox" aria-expanded="false" title="Theme (this device)">
+          🎨 <span id="theme-label">THEME</span> <span class="caret">▾</span>
+        </button>
+        <div id="theme-menu" class="dropdown theme-menu" role="listbox" hidden>
+          <div class="theme-modes">
+            <button type="button" class="chip" data-appearance="dark">🌙 dark</button>
+            <button type="button" class="chip" data-appearance="light">☀️ light</button>
+          </div>
+          <input type="search" class="theme-filter" id="theme-filter" placeholder="filter themes…">
+          <div id="theme-list"></div>
+        </div>
+      </div>
+      <button type="button" class="icon-btn" id="logout-btn" title="Sign out">⏻</button>
+    </div>
+  </header>
+
+  <div class="shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="side-section">
+        <div class="side-label">drives</div>
+        <nav id="drives" class="drives"></nav>
+      </div>
+      <div class="side-section">
+        <div class="side-label">quick jump</div>
+        <nav class="drives quick">
+          <a href="#/browse/shared/from-phone" class="drive"><span class="drive-icon">📱</span><span class="drive-name">Phone inbox</span></a>
+          <a href="#/browse/shared/handoffs" class="drive"><span class="drive-icon">🤝</span><span class="drive-name">Handoffs</span></a>
+          <a href="#/browse/shared/to-darkbox" class="drive"><span class="drive-icon">🛰️</span><span class="drive-name">To darkbox</span></a>
+          <a href="#/trash" class="drive" data-nav="trash"><span class="drive-icon">🗑️</span><span class="drive-name">Trash</span><span class="drive-count" id="trash-count"></span></a>
+        </nav>
+      </div>
+      <div class="side-foot" id="side-foot">◆ tailnet only · encrypted</div>
+    </aside>
+
+    <main class="main" id="main">
+      <div class="crumbs-bar">
+        <nav class="crumbs" id="crumbs" aria-label="Path"></nav>
+        <div class="toolbar" id="toolbar">
+          <button type="button" class="btn btn-primary" id="upload-btn" title="Upload files (u)">⬆ Upload</button>
+          <button type="button" class="btn" id="mkdir-btn" title="New folder (n)">📁 New folder</button>
+          <button type="button" class="btn hide-sm" id="newfile-btn" title="New text file">📝 New file</button>
+          <select id="sort-select" class="select" title="Sort">
+            <option value="name">Name</option>
+            <option value="mtime">Modified</option>
+            <option value="size">Size</option>
+            <option value="type">Type</option>
+          </select>
+          <button type="button" class="icon-btn" id="sort-dir" title="Sort direction">↑</button>
+        </div>
+      </div>
+      <div class="selbar" id="selbar" hidden>
+        <span class="sel-count" id="sel-count"></span>
+        <button type="button" class="btn" data-act="download">⬇ Download</button>
+        <button type="button" class="btn" data-act="copy">⧉ Copy to…</button>
+        <button type="button" class="btn" data-act="move">➜ Move to…</button>
+        <button type="button" class="btn" data-act="rename">✎ Rename</button>
+        <button type="button" class="btn btn-danger" data-act="trash">🗑 Delete</button>
+        <button type="button" class="btn-ghost" data-act="clear">✕</button>
+      </div>
+      <section id="view" class="view" tabindex="-1"></section>
+      <input type="file" id="file-input" multiple hidden>
+    </main>
+  </div>
+
+  <div id="drop" class="drop" hidden>
+    <div class="drop-card">
+      <div class="drop-icon">⬆</div>
+      <div class="drop-title">Drop to upload</div>
+      <div class="drop-dest" id="drop-dest"></div>
+    </div>
+  </div>
+  <div id="uploads" class="uploads" hidden>
+    <div class="uploads-head"><span id="uploads-title">uploads</span><button type="button" class="btn-ghost" id="uploads-close">✕</button></div>
+    <div id="uploads-list"></div>
+  </div>
+  <button type="button" class="fab only-mobile" id="fab" title="Upload">⬆</button>
+</div>
+
+<!-- viewer / lightbox -->
+<div id="viewer" class="viewer" hidden>
+  <div class="viewer-top">
+    <span class="viewer-icon" id="viewer-icon"></span>
+    <span class="viewer-name" id="viewer-name"></span>
+    <span class="viewer-meta" id="viewer-meta"></span>
+    <span class="grow"></span>
+    <a class="icon-btn" id="viewer-dl" title="Download" download>⬇</a>
+    <a class="icon-btn" id="viewer-open" title="Open raw in a new tab" target="_blank" rel="noopener">↗</a>
+    <button type="button" class="icon-btn" id="viewer-info" title="Details (i)">ⓘ</button>
+    <button type="button" class="icon-btn" id="viewer-close" title="Close (Esc)">✕</button>
+  </div>
+  <button type="button" class="viewer-nav prev" id="viewer-prev" title="Previous (←)">‹</button>
+  <div class="viewer-stage" id="viewer-stage"></div>
+  <button type="button" class="viewer-nav next" id="viewer-next" title="Next (→)">›</button>
+  <div class="viewer-strip" id="viewer-strip"></div>
+</div>
+
+<!-- dialog -->
+<div id="modal" class="modal" hidden>
+  <div class="window modal-window" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="titlebar">
+      <span class="dot dot-a"></span><span class="dot dot-b"></span><span class="dot dot-c"></span>
+      <span class="titlebar-text" id="modal-title"></span>
+      <button type="button" class="win-close" id="modal-close" title="Close">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<div id="ctx" class="ctx" hidden role="menu"></div>
+<div id="toasts" class="toasts" aria-live="polite"></div>
+</body>
+</html>

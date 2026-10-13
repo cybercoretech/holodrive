@@ -1,0 +1,16 @@
+[Unit]
+Description=Holodrive — neon web file manager (127.0.0.1, published by tailscale serve)
+Documentation=https://github.com/cybercore-tech/holodrive
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/holodrive
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=default.target
