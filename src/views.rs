@@ -7,6 +7,8 @@ const UI_CSS: &str = include_str!("../static/ui.css");
 const APP_JS: &str = include_str!("../static/app.js");
 const FAVICON: &str = include_str!("../static/favicon.svg");
 const LOGO: &str = include_str!("../static/holocube.svg");
+/// CodeMirror 6 + Vim, pre-gzipped (`editor/build.sh`); loaded only when editing.
+pub const EDITOR_JS_GZ: &[u8] = include_bytes!("../static/editor.js.gz");
 const FONT_REGULAR: &[u8] = include_bytes!("../static/fonts/jbm-nerd-regular.woff2");
 const FONT_BOLD: &[u8] = include_bytes!("../static/fonts/jbm-nerd-bold.woff2");
 const FONT_ITALIC: &[u8] = include_bytes!("../static/fonts/jbm-nerd-italic.woff2");

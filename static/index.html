@@ -125,6 +125,7 @@
       </div>
       <section id="view" class="view" tabindex="-1"></section>
       <input type="file" id="file-input" multiple hidden>
+      <input type="file" id="dir-input" webkitdirectory multiple hidden>
     </main>
   </div>
 
@@ -149,6 +150,7 @@
     <span class="viewer-name" id="viewer-name"></span>
     <span class="viewer-meta" id="viewer-meta"></span>
     <span class="grow"></span>
+    <button type="button" class="btn" id="viewer-edit" title="Edit (e)" hidden>✏️ Edit</button>
     <a class="icon-btn" id="viewer-dl" title="Download" download>⬇</a>
     <a class="icon-btn" id="viewer-open" title="Open raw in a new tab" target="_blank" rel="noopener">↗</a>
     <button type="button" class="icon-btn" id="viewer-info" title="Details (i)">ⓘ</button>
@@ -169,6 +171,30 @@
       <button type="button" class="win-close" id="modal-close" title="Close">✕</button>
     </div>
     <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<!-- editor -->
+<div id="editor" class="editor" hidden>
+  <div class="window editor-window" role="dialog" aria-modal="true" aria-labelledby="ed-title">
+    <div class="titlebar">
+      <span class="dot dot-a"></span><span class="dot dot-b"></span><span class="dot dot-c"></span>
+      <span class="ed-icon emoji" id="ed-icon"></span>
+      <span class="titlebar-text ed-title" id="ed-title"></span>
+      <span class="ed-dirty" id="ed-dirty" title="unsaved changes" hidden>●</span>
+      <span class="ed-ro chip" id="ed-ro" hidden>read-only</span>
+      <button type="button" class="chip" id="ed-vim" title="Vim keys on/off">vim</button>
+      <button type="button" class="btn btn-primary" id="ed-save" title="Save (Ctrl+S or :w)">💾 Save</button>
+      <button type="button" class="win-close" id="ed-close" title="Close (:q)">✕</button>
+    </div>
+    <div class="ed-body" id="ed-body"></div>
+    <div class="ed-status">
+      <span class="ed-mode" id="ed-mode"></span>
+      <span id="ed-pos"></span>
+      <span class="grow"></span>
+      <span id="ed-hint" class="muted"></span>
+      <span class="ed-lang" id="ed-lang"></span>
+    </div>
   </div>
 </div>
 

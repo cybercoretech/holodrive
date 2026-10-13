@@ -466,6 +466,7 @@ async function showViewerItem() {
   $("#viewer-dl").href = rawUrl(path, true);
   $("#viewer-open").href = rawUrl(path);
   $("#viewer-prev").hidden = $("#viewer-next").hidden = V.list.length < 2;
+  $("#viewer-edit").hidden = !["text", "md"].includes(kind) || e.size > 4 * 1024 * 1024;
   const media = V.list.filter((x) => ["image", "video"].includes(kindOf(x)));
   const strip = $("#viewer-strip");
   if (["image", "video"].includes(kind) && media.length > 1) {
@@ -630,13 +631,15 @@ function normalize(p) {
 
 // ── dialogs ────────────────────────────────────────────────────────────
 function modal(title, body, actions) {
+  delete $("#modal").dataset.kind;
+  $(".modal-window").classList.remove("wide");
   $("#modal-title").textContent = title;
   const acts = h("div", { class: "modal-actions" }, actions || []);
   $("#modal-body").replaceChildren(body, acts);
   $("#modal").hidden = false;
   const first = $("#modal-body input, #modal-body .btn-primary"); if (first) setTimeout(() => first.focus(), 30);
 }
-function closeModal() { $("#modal").hidden = true; $("#modal-body").replaceChildren(); }
+function closeModal() { $("#modal").hidden = true; $("#modal-body").replaceChildren(); delete $("#modal").dataset.kind; $(".modal-window").classList.remove("wide"); }
 function prompt(title, label, value, okText, selectStem) {
   return new Promise((resolve) => {
     const input = h("input", { class: "text-input", value: value || "", spellcheck: "false" });
@@ -664,7 +667,7 @@ async function doMkdir() {
 async function doNewFile() {
   const name = await prompt("New file", "file name", "notes.md", "Create", true);
   if (!name) return;
-  try { const r = await api("POST", "/api/newfile", { dir: S.path, name }); await refresh(); focusPath(r.path); toast("📝 " + name + " created", "ok"); } catch (e) { fail(e); }
+  try { const r = await api("POST", "/api/newfile", { dir: S.path, name }); await refresh(); focusPath(r.path); openEditor(r.path); } catch (e) { fail(e); }
 }
 async function doRename(e) {
   const name = await prompt("Rename", "new name", e.name, "Rename", e.kind !== "dir");
@@ -781,6 +784,7 @@ function itemMenu(x, y) {
   showCtx(x, y, [
     one && { icon: one.kind === "dir" ? "📂" : "👁️", label: one.kind === "dir" ? "Open" : "Preview", key: "↵", run: () => openEntry(one) },
     one && S.route === "search" && { icon: "📂", label: "Show in folder", run: () => { const p = entryPath(one); go(parentOf(p)); setTimeout(() => focusPath(p), 400); } },
+    canEdit(one) && { icon: "✏️", label: S.listing && S.listing.writable ? "Edit" : "Open in editor", key: "E", run: () => openEditor(entryPath(one)) },
     { icon: "⬇️", label: sel.length > 1 || (one && one.kind === "dir") ? "Download as zip" : "Download", run: () => doDownload(sel) },
     "-",
     { icon: "⧉", label: "Copy", key: "Ctrl+C", run: () => clipSet("copy") },
@@ -799,7 +803,7 @@ function itemMenu(x, y) {
 function bgMenu(x, y) {
   const writable = S.listing && S.listing.writable && S.route === "browse";
   showCtx(x, y, [
-    writable && { icon: "⬆️", label: "Upload files", key: "U", run: () => $("#file-input").click() },
+    writable && { icon: "⬆️", label: "Upload…", key: "U", run: () => openUploadPanel(S.path) },
     writable && { icon: "📁", label: "New folder", key: "N", run: doMkdir },
     writable && { icon: "📝", label: "New file", run: doNewFile },
     writable && S.clip && { icon: "📋", label: `Paste ${S.clip.paths.length} item${S.clip.paths.length > 1 ? "s" : ""}`, key: "Ctrl+V", run: clipPaste },
@@ -889,6 +893,141 @@ async function filesFromDrop(dt) {
   return out;
 }
 
+// ── upload panel (our own, instead of opening the browser's chooser) ───
+const UP = { staged: [], dest: "" };
+function stamp() { const d = new Date(), p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`; }
+function stage(items) {
+  for (const it of items) if (!UP.staged.some((x) => x.rel === it.rel && x.file.size === it.file.size)) UP.staged.push(it);
+  if (!$("#modal").hidden && $("#modal").dataset.kind === "upload") renderStaged();
+}
+function renderStaged() {
+  const list = $("#staged"), go = $("#up-go");
+  if (!list) return;
+  list.replaceChildren(...UP.staged.map((it, i) => h("div", { class: "staged-row" },
+    h("span", { class: "emoji", text: iconFor({ kind: "file", name: it.rel, ext: (it.rel.split(".").pop() || "").toLowerCase() }) }),
+    h("span", { class: "name", title: it.rel, text: it.rel }),
+    h("span", { class: "muted", text: fmtSize(it.file.size) }),
+    h("button", { type: "button", title: "remove", text: "✕", onclick: () => { UP.staged.splice(i, 1); renderStaged(); } }))));
+  const bytes = UP.staged.reduce((a, x) => a + x.file.size, 0);
+  go.disabled = !UP.staged.length;
+  go.textContent = UP.staged.length ? `⬆ Upload ${UP.staged.length} file${UP.staged.length > 1 ? "s" : ""} · ${fmtSize(bytes)}` : "⬆ Upload";
+}
+function openUploadPanel(dest) {
+  UP.dest = dest || UP.dest || S.path;
+  const dz = h("div", { class: "dropzone", tabindex: "0", role: "button", "aria-label": "Choose files to upload" },
+    h("div", { class: "dz-icon", text: "⬆" }),
+    h("div", { class: "dz-title", text: "Drop files or folders" }),
+    h("div", { class: "dz-sub", text: "or paste with Ctrl+V · or pick them below" }),
+    h("div", { class: "dz-buttons" },
+      h("button", { class: "btn", type: "button", text: "📄 Choose files", onclick: (ev) => { ev.stopPropagation(); $("#file-input").click(); } }),
+      h("button", { class: "btn", type: "button", text: "📁 Choose folder", onclick: (ev) => { ev.stopPropagation(); $("#dir-input").click(); } })));
+  dz.addEventListener("click", () => $("#file-input").click());
+  dz.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); $("#file-input").click(); } });
+  dz.addEventListener("dragover", (ev) => { ev.preventDefault(); ev.stopPropagation(); dz.classList.add("over"); });
+  dz.addEventListener("dragleave", () => dz.classList.remove("over"));
+  dz.addEventListener("drop", async (ev) => { ev.preventDefault(); ev.stopPropagation(); dz.classList.remove("over"); $("#drop").hidden = true; stage(await filesFromDrop(ev.dataTransfer)); });
+  const root = S.roots.find((r) => r.id === UP.dest.split("/")[0]);
+  const destRow = h("div", { class: "dest-row" },
+    h("span", { class: "field-label", text: "upload to" }),
+    h("span", { class: "dest-path", text: `${root ? root.icon + " " : ""}${UP.dest}` }),
+    h("button", { class: "btn-ghost", type: "button", text: "change…", onclick: async () => {
+      const d = await pickFolder("Upload to…", "📥 Upload here", UP.dest);
+      openUploadPanel(d || UP.dest);
+    } }));
+  const go = h("button", { class: "btn btn-primary", id: "up-go", type: "button", text: "⬆ Upload", onclick: () => {
+    const items = UP.staged.splice(0);
+    closeModal();
+    enqueueUploads(items, UP.dest);
+  } });
+  modal("Upload", h("div", { style: { display: "grid", gap: "14px" } }, dz, destRow, h("div", { class: "staged", id: "staged" })),
+    [h("button", { class: "btn", type: "button", text: "Cancel", onclick: () => { UP.staged = []; closeModal(); } }), go]);
+  $("#modal").dataset.kind = "upload";
+  $(".modal-window").classList.add("wide");
+  renderStaged();
+}
+
+// ── editor (CodeMirror 6 + Vim, loaded on first use) ───────────────────
+let editorLib = null;
+function loadEditor() {
+  if (window.HoloEditor) return Promise.resolve(window.HoloEditor);
+  if (!editorLib) editorLib = new Promise((resolve, reject) => {
+    const sc = h("script", { src: "/static/editor.js?v=" + ((S.session && S.session.version) || "1") });
+    sc.addEventListener("load", () => resolve(window.HoloEditor));
+    sc.addEventListener("error", () => { editorLib = null; reject(new Error("couldn't load the editor")); });
+    document.head.append(sc);
+  });
+  return editorLib;
+}
+const ED = { inst: null, path: "", mtime: null, saved: "", dirty: false, writable: true, vim: store.get("vim", true) };
+function edDirty() {
+  const d = ED.inst ? ED.inst.text() !== ED.saved : false;
+  if (d !== ED.dirty) { ED.dirty = d; $("#ed-dirty").hidden = !d; }
+}
+async function openEditor(path) {
+  let t, lib;
+  try { [t, lib] = await Promise.all([api("GET", "/api/text?path=" + enc(path)), loadEditor()]); }
+  catch (e) { fail(e); return; }
+  closeViewer();
+  if (ED.inst) ED.inst.destroy();
+  ED.path = path; ED.mtime = t.mtime; ED.saved = t.text; ED.dirty = false; ED.writable = t.writable;
+  const name = baseName(path);
+  $("#ed-title").textContent = path;
+  $("#ed-icon").textContent = iconFor({ kind: "file", name, ext: (name.includes(".") ? name.split(".").pop() : "").toLowerCase() });
+  $("#ed-dirty").hidden = true;
+  $("#ed-ro").hidden = t.writable;
+  $("#ed-save").hidden = !t.writable;
+  $("#ed-vim").classList.toggle("on", ED.vim);
+  $("#ed-hint").textContent = ED.vim ? ":w save · :q close · :wq · jk = Esc" : "Ctrl+S save";
+  $("#editor").hidden = false;
+  document.body.style.overflow = "hidden";
+  const body = $("#ed-body"); body.replaceChildren();
+  ED.inst = lib.create({
+    parent: body, doc: t.text, name, readOnly: !t.writable, vimMode: ED.vim,
+    onSave: saveEditor, onQuit: (force) => closeEditor(force), onChange: edDirty,
+    onStatus: (st) => {
+      $("#ed-pos").textContent = `Ln ${st.line}, Col ${st.col} · ${st.lines} lines`;
+      $("#ed-lang").textContent = st.lang;
+      const m = $("#ed-mode"); m.textContent = st.mode; m.className = "ed-mode " + st.mode.toLowerCase();
+    },
+  });
+  ED.inst.focus();
+}
+async function saveEditor(force) {
+  if (!ED.inst || !ED.writable) return false;
+  const text = ED.inst.text();
+  try {
+    const r = await api("POST", "/api/text", { path: ED.path, text, mtime: force ? null : ED.mtime });
+    ED.mtime = r.mtime; ED.saved = text; edDirty();
+    toast("💾 saved " + baseName(ED.path), "ok");
+    if (S.route === "browse" && parentOf(ED.path) === S.path) refresh();
+    return true;
+  } catch (e) {
+    if (/changed on disk/.test(e.message)) {
+      const choice = await new Promise((resolve) => {
+        const done = (v) => { closeModal(); resolve(v); };
+        modal("Changed on disk", h("p", { text: `${baseName(ED.path)} was changed somewhere else since you opened it.` }), [
+          h("button", { class: "btn", type: "button", text: "Cancel", onclick: () => done("cancel") }),
+          h("button", { class: "btn", type: "button", text: "↺ Reload theirs", onclick: () => done("reload") }),
+          h("button", { class: "btn btn-danger", type: "button", text: "Overwrite with mine", onclick: () => done("overwrite") })]);
+      });
+      if (choice === "overwrite") return saveEditor(true);
+      if (choice === "reload") { ED.dirty = false; await openEditor(ED.path); }
+      ED.inst && ED.inst.focus();
+      return false;
+    }
+    fail(e); return false;
+  }
+}
+async function closeEditor(force) {
+  if ($("#editor").hidden) return;
+  if (ED.dirty && !force && !(await confirmBox("Discard changes?", `${baseName(ED.path)} has unsaved changes.`, "Discard", true))) { ED.inst && ED.inst.focus(); return; }
+  $("#editor").hidden = true;
+  document.body.style.overflow = "";
+  if (ED.inst) { ED.inst.destroy(); ED.inst = null; }
+  ED.dirty = false;
+}
+const canEdit = (e) => e && e.kind === "file" && e.size <= 4 * 1024 * 1024 && ["text", "md", "other"].includes(kindOf(e));
+
 // ── trash & search views ───────────────────────────────────────────────
 async function showTrash() {
   S.route = "trash"; S.sel.clear(); renderCrumbs(); markNav(); updateSelbar();
@@ -946,6 +1085,7 @@ function columns() {
   return n < 0 ? items.length : n;
 }
 function onKey(ev) {
+  if (!$("#editor").hidden && $("#modal").hidden) return; // CodeMirror owns the keyboard
   const tag = (ev.target.tagName || "").toLowerCase();
   const typing = tag === "input" || tag === "textarea" || tag === "select";
   if (!$("#viewer").hidden) {
@@ -953,6 +1093,7 @@ function onKey(ev) {
     else if (ev.key === "ArrowRight" && !typing) viewerStep(1);
     else if (ev.key === "ArrowLeft" && !typing) viewerStep(-1);
     else if (ev.key === "i" && !typing) { const e = V.list[V.i]; if (e) showProps(e); }
+    else if (ev.key === "e" && !typing && !$("#viewer-edit").hidden) $("#viewer-edit").click();
     return;
   }
   if (!$("#modal").hidden) { if (ev.key === "Escape") closeModal(); return; }
@@ -992,7 +1133,8 @@ function onKey(ev) {
   if (mod || ev.altKey) return;
   const writable = S.listing && S.listing.writable && S.route === "browse";
   if (ev.key === "g") { setView("grid"); } else if (ev.key === "l") { setView("list"); }
-  else if (ev.key === "u" && writable) $("#file-input").click();
+  else if (ev.key === "u" && writable) openUploadPanel(S.path);
+  else if (ev.key === "e" && S.sel.size === 1 && canEdit(selected()[0])) openEditor(entryPath(selected()[0]));
   else if (ev.key === "n" && writable) doMkdir();
   else if (ev.key === "r") refresh();
   else if (ev.key === "i" && S.sel.size === 1) showProps(selected()[0]);
@@ -1082,9 +1224,30 @@ function wireApp() {
     }
   });
 
-  $("#file-input").addEventListener("change", (ev) => { enqueueUploads([...ev.target.files].map((f) => ({ file: f, rel: f.name })), S.path); ev.target.value = ""; });
-  $("#upload-btn").addEventListener("click", () => $("#file-input").click());
-  $("#fab").addEventListener("click", () => $("#file-input").click());
+  $("#file-input").addEventListener("change", (ev) => { stage([...ev.target.files].map((f) => ({ file: f, rel: f.name }))); ev.target.value = ""; });
+  $("#dir-input").addEventListener("change", (ev) => { stage([...ev.target.files].filter((f) => !f.webkitRelativePath.split("/").some((p) => p.startsWith("."))).map((f) => ({ file: f, rel: f.webkitRelativePath || f.name }))); ev.target.value = ""; });
+  $("#upload-btn").addEventListener("click", () => openUploadPanel(S.path));
+  $("#fab").addEventListener("click", () => openUploadPanel(S.path));
+  document.addEventListener("paste", (ev) => {
+    if (!$("#editor").hidden || ["input", "textarea"].includes((ev.target.tagName || "").toLowerCase())) return;
+    const files = [...(ev.clipboardData && ev.clipboardData.files || [])];
+    if (!files.length || S.route !== "browse" || !(S.listing && S.listing.writable)) return;
+    ev.preventDefault();
+    const items = files.map((f) => ({ file: f, rel: /^image\.(png|jpe?g|gif|webp)$/i.test(f.name) ? `pasted-${stamp()}.${f.name.split(".").pop()}` : f.name }));
+    if ($("#modal").hidden) openUploadPanel(S.path);
+    stage(items);
+  });
+  // editor wiring
+  $("#ed-save").addEventListener("click", () => saveEditor());
+  $("#ed-close").addEventListener("click", () => closeEditor(false));
+  $("#ed-vim").addEventListener("click", () => {
+    ED.vim = !ED.vim; store.set("vim", ED.vim);
+    $("#ed-vim").classList.toggle("on", ED.vim);
+    $("#ed-hint").textContent = ED.vim ? ":w save · :q close · :wq · jk = Esc" : "Ctrl+S save";
+    ED.inst && ED.inst.setVim(ED.vim);
+  });
+  $("#viewer-edit").addEventListener("click", () => { const e = V.list[V.i]; if (e) openEditor(entryPath(e)); });
+  window.addEventListener("beforeunload", (ev) => { if (ED.dirty) { ev.preventDefault(); ev.returnValue = ""; } });
   $("#mkdir-btn").addEventListener("click", doMkdir);
   $("#newfile-btn").addEventListener("click", doNewFile);
   $("#uploads-close").addEventListener("click", () => { $("#uploads").hidden = true; if (!U.active && !U.queue.length) { $("#uploads-list").replaceChildren(); U.done = U.total = U.failed = 0; } });
