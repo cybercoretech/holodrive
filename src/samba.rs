@@ -54,7 +54,9 @@ pub fn helper(args: &[&str], stdin: Option<String>) -> Result<(String, Value), S
         Ok(v) => Err(v["message"].as_str().unwrap_or("helper failed").to_string()),
         Err(_) => {
             let err = String::from_utf8_lossy(&out.stderr);
-            if out.status.code() == Some(126) || out.status.code() == Some(127) {
+            if err.contains("must be setuid root") {
+                Err("pkexec can't run inside a sandboxed service: reinstall holodrive.service from packaging/ (no PrivateTmp/ProtectSystem)".into())
+            } else if out.status.code() == Some(126) || out.status.code() == Some(127) {
                 Err(
                     "pkexec refused: the polkit rule isn't installed (run install-root.sh again)"
                         .into(),
