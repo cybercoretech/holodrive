@@ -19,9 +19,16 @@ Cybercore. One Rust binary, no database, no Node.
   plays on a spinning disc; PDFs open inline.
 - **Read anything textual.** Code with line numbers and highlighting, and
   Markdown rendered safely (no raw HTML).
-- **Upload anywhere.** Drag files or whole folders onto the page, use the
-  button, or the ⬆ button on the phone. Parallel uploads with live progress;
-  nothing lands until it's complete; names never clobber (`photo (2).jpg`).
+- **Upload anywhere.** Drag files or whole folders onto the page, paste
+  (Ctrl+V a screenshot), or open the upload panel (its own neon drop zone, a
+  staged list and a destination picker; the browser's file chooser only opens
+  if you ask for it). Parallel uploads with live progress; nothing lands until
+  it's complete; names never clobber (`photo (2).jpg`).
+- **Edit in place.** A CodeMirror 6 editor with **Vim keys** (`:w`, `:q`,
+  `:wq`, `:x`, `jk` = Esc; toggle off for plain keys), syntax highlighting for
+  ~30 languages in your theme's colours, search, folding and Ctrl+S. Saves are
+  atomic and refuse to overwrite a file changed elsewhere unless you say so.
+  Loaded only the first time you edit (~390 KB gzipped, cached).
 - **Move fast.** Multi-select (click, Ctrl, Shift, long-press on touch),
   drag onto folders, breadcrumbs or drives to move (Ctrl/Alt = copy),
   cut/copy/paste, rename, duplicate, Copy to…/Move to… with a folder picker,
@@ -37,7 +44,7 @@ Cybercore. One Rust binary, no database, no Node.
   pick one, it follows the desktop's active theme live.
 - **Keyboard.** Arrows, Enter, Space (preview), Backspace (up), Delete, F2,
   Ctrl+A/C/X/V, `/` search, `g`/`l` grid/list, `u` upload, `n` new folder,
-  `i` properties, `r` refresh.
+  `e` edit, `i` properties, `r` refresh.
 
 ## Security model
 
@@ -86,9 +93,11 @@ Then `systemctl --user restart holodrive`. Thumbnails cache in
 
 ## Roadmap
 
-- **Editor:** CodeMirror with Vim keys in the browser.
 - **Samba panel:** shares, sessions, toggles and new shares through a small
   root helper (polkit), validated with `testparm`.
 - **Time machine:** browse and restore from snapper snapshots.
+
+The editor bundle (`static/editor.js.gz`) is built from `editor/` with
+`editor/build.sh`; CodeMirror and its packages are MIT.
 
 MIT © Cybercore Tech

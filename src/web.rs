@@ -196,6 +196,17 @@ async fn index() -> Html<&'static str> {
 }
 
 async fn asset(Path(file): Path<String>) -> Response {
+    if file == "editor.js" {
+        return (
+            [
+                (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+                (header::CONTENT_ENCODING, "gzip"),
+                (header::CACHE_CONTROL, "public, max-age=604800, immutable"),
+            ],
+            views::EDITOR_JS_GZ,
+        )
+            .into_response();
+    }
     let Some((body, ctype)) = views::asset(&file) else {
         return StatusCode::NOT_FOUND.into_response();
     };
