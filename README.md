@@ -42,6 +42,13 @@ Cybercore. One Rust binary, no database, no Node.
   *Share via Samba…*), edit, rename, make read-only, disable, disconnect
   everyone, remove, reload or restart smbd, and roll back to any of the last
   20 `smb.conf` versions. See *Samba helper* below.
+- **Time machine.** For drives covered by snapper, press ⏳ (or `t`) to see
+  any folder as it was in any snapshot: a timeline of every snapshot, `[`/`]`
+  to step, files deleted since marked ✗, changed ones ±. Restore items in
+  place (the current ones go to the trash first, so it's undoable) or as
+  copies. Every file has **Versions…** (`v`): each distinct past version with
+  its size change, to preview, download or restore. Read-only access through
+  snapper's `ALLOW_USERS` + `SYNC_ACL`; no root needed.
 - **Search** a drive by name.
 - **Properties** show permissions, the real path, and the Samba path
   (`\\blackbox\Shared\…`, `smb://…`) to copy.
@@ -50,7 +57,7 @@ Cybercore. One Rust binary, no database, no Node.
   pick one, it follows the desktop's active theme live.
 - **Keyboard.** Arrows, Enter, Space (preview), Backspace (up), Delete, F2,
   Ctrl+A/C/X/V, `/` search, `g`/`l` grid/list, `u` upload, `n` new folder,
-  `e` edit, `i` properties, `r` refresh.
+  `e` edit, `v` versions, `t` time machine, `i` properties, `r` refresh.
 
 ## Security model
 
@@ -125,7 +132,8 @@ it's given:
 
 ## Roadmap
 
-- **Time machine:** browse and restore from snapper snapshots.
+- smb.conf editor (form and Vim) with safety rails; a Vim-style `:` command
+  bar in the browser.
 
 The editor bundle (`static/editor.js.gz`) is built from `editor/` with
 `editor/build.sh`; CodeMirror and its packages are MIT.

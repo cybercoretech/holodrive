@@ -128,8 +128,8 @@ function folderArt(name) {
   return h("div", { class: "folder", style: { "--fc": folderColor(name) } }, svg, emoji ? h("span", { class: "f-emoji emoji", text: emoji }) : null);
 }
 const hasThumb = (e) => e.kind === "file" && (["jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff"].includes(e.ext) || ["mp4", "mkv", "webm", "mov", "avi", "m4v"].includes(e.ext));
-const thumbUrl = (path) => `/api/thumb?path=${enc(path)}`;
-const rawUrl = (path, dl) => `/api/raw?path=${enc(path)}${dl ? "&dl=1" : ""}`;
+const thumbUrl = (path, snap) => snap ? `/api/snap/thumb?path=${enc(path)}&snap=${snap}` : `/api/thumb?path=${enc(path)}`;
+const rawUrl = (path, dl, snap) => `/api/${snap ? "snap/" : ""}raw?path=${enc(path)}${snap ? "&snap=" + snap : ""}${dl ? "&dl=1" : ""}`;
 
 // ── state ──────────────────────────────────────────────────────────────
 const S = {
@@ -235,17 +235,19 @@ async function refreshTrashCount() {
 function markNav() {
   const root = S.path.split("/")[0];
   $$(".drive").forEach((d) => d.classList.toggle("active",
-    (S.route === "trash" && d.dataset.nav === "trash") || (S.route === "samba" && d.dataset.nav === "samba") || (S.route === "browse" || S.route === "search") && d.dataset.root === root));
+    (S.route === "trash" && d.dataset.nav === "trash") || (S.route === "samba" && d.dataset.nav === "samba") || (S.route === "browse" || S.route === "search" || S.route === "time") && d.dataset.root === root));
 }
 
 // ── routing ────────────────────────────────────────────────────────────
 async function route() {
   closeViewer(); closeCtx(); $("#sidebar").classList.remove("open");
+  if (!location.hash.startsWith("#/time/")) { $("#timebar").hidden = true; document.body.classList.remove("time-travel"); }
   const hash = location.hash.slice(1) || "/";
   const [pathPart, query] = hash.split("?");
   const parts = pathPart.split("/").filter(Boolean);
   if (parts[0] === "trash") return showTrash();
   if (parts[0] === "samba") return showSamba();
+  if (parts[0] === "time" && parts.length > 2) return showTime(parts[1], decPath(parts.slice(2).join("/")));
   if (parts[0] === "search") {
     const q = new URLSearchParams(query || "").get("q") || "";
     return showSearch(decPath(parts.slice(1).join("/")), q);
@@ -280,6 +282,7 @@ async function refresh() {
   else if (S.route === "trash") await showTrash();
   else if (S.route === "search") await showSearch(S.path, S.search);
   else if (S.route === "samba") await showSamba();
+  else if (S.route === "time") await showTime(S.snap, S.path);
   loadRoots().catch(() => {});
   refreshTrashCount();
 }
@@ -308,7 +311,8 @@ function renderCrumbs() {
     const vp = parts.slice(0, i + 1).join("/");
     const label = i === 0 ? `${root ? root.icon : "📁"} ${root ? root.name : p}` : p;
     if (i) out.push(h("span", { class: "crumb-sep", text: "/" }));
-    out.push(h("a", { class: "crumb" + (i === parts.length - 1 && S.route === "browse" ? " last" : ""), href: "#/browse/" + encPath(vp), dataset: { drop: vp }, text: label }));
+    const href = S.route === "time" ? `#/time/${S.snap}/${encPath(vp)}` : "#/browse/" + encPath(vp);
+    out.push(h("a", { class: "crumb" + (i === parts.length - 1 && (S.route === "browse" || S.route === "time") ? " last" : ""), href, dataset: { drop: S.route === "time" ? null : vp }, text: label }));
   });
   if (S.route === "search") out.push(h("span", { class: "crumb-sep", text: "⌕" }), h("span", { class: "crumb last", text: `“${S.search}”` }));
   crumbs.replaceChildren(...out);
@@ -318,7 +322,7 @@ function render() {
   renderCrumbs(); markNav();
   const writable = S.route === "browse" && S.listing && S.listing.writable;
   for (const id of ["upload-btn", "mkdir-btn", "newfile-btn", "fab"]) $("#" + id).hidden = !writable;
-  $("#toolbar").hidden = S.route === "trash";
+  $("#toolbar").hidden = S.route === "trash" || S.route === "time";
   $$(".seg-btn").forEach((b) => b.classList.toggle("on", b.dataset.view === S.view));
   $("#sort-select").value = S.sort;
   $("#sort-dir").textContent = S.dir > 0 ? "↑" : "↓";
@@ -337,7 +341,7 @@ function render() {
 function tileArt(e, path) {
   if (e.kind === "dir") return folderArt(e.name);
   if (hasThumb(e)) {
-    const img = h("img", { class: "thumb", loading: "lazy", decoding: "async", alt: "", src: thumbUrl(path), draggable: "false" });
+    const img = h("img", { class: "thumb", loading: "lazy", decoding: "async", alt: "", src: thumbUrl(path, e.snap), draggable: "false" });
     img.addEventListener("error", () => img.replaceWith(h("span", { class: "big-emoji emoji", text: iconFor(e) })), { once: true });
     const wrap = [img];
     if (kindOf(e) === "video") wrap.push(h("span", { class: "play", text: "▶" }));
@@ -351,7 +355,7 @@ function renderGrid() {
   S.entries.forEach((e, i) => {
     const path = entryPath(e);
     grid.append(h("div", {
-      class: "tile" + (S.sel.has(path) ? " sel" : "") + (i === S.focus ? " focus" : "") + (S.clip && S.clip.mode === "cut" && S.clip.paths.includes(path) ? " cut" : ""),
+      class: "tile" + (S.sel.has(path) ? " sel" : "") + (i === S.focus ? " focus" : "") + (e.gone ? " gone" : "") + (e.changed ? " changed" : "") + (S.clip && S.clip.mode === "cut" && S.clip.paths.includes(path) ? " cut" : ""),
       dataset: { i, drop: e.kind === "dir" ? path : null }, draggable: S.route === "browse" && !isTouch ? "true" : null,
       title: `${e.name}\n${e.kind === "dir" ? "folder" : fmtSize(e.size)} · ${fmtDate(e.mtime)}`,
     },
@@ -359,7 +363,8 @@ function renderGrid() {
       e.link ? h("span", { class: "tile-badge", title: e.escapes ? "link outside this drive (blocked)" : "symlink", text: e.escapes ? "🚫" : "🔗" }) : null,
       h("div", { class: "tile-art" }, tileArt(e, path)),
       h("div", { class: "tile-name", text: e.name }),
-      S.route === "search" ? h("div", { class: "tile-sub", text: parentOf(path) }) : h("div", { class: "tile-sub", text: e.kind === "dir" ? fmtDate(e.mtime) : fmtSize(e.size) })));
+      S.route === "search" ? h("div", { class: "tile-sub", text: parentOf(path) })
+        : h("div", { class: "tile-sub", text: e.gone ? "✗ deleted since" : e.changed ? "± changed since" : e.kind === "dir" ? fmtDate(e.mtime) : fmtSize(e.size) })));
   });
   return grid;
 }
@@ -374,17 +379,17 @@ function renderList() {
   S.entries.forEach((e, i) => {
     const path = entryPath(e);
     const icon = hasThumb(e) && kindOf(e) === "image"
-      ? h("img", { src: thumbUrl(path), loading: "lazy", alt: "", draggable: "false" })
+      ? h("img", { src: thumbUrl(path, e.snap), loading: "lazy", alt: "", draggable: "false" })
       : e.kind === "dir" ? h("span", { class: "emoji", text: FOLDER_EMOJI[e.name.toLowerCase()] || "📁" }) : h("span", { class: "emoji", text: iconFor(e) });
     list.append(h("div", {
-      class: "row" + (S.sel.has(path) ? " sel" : "") + (i === S.focus ? " focus" : "") + (S.clip && S.clip.mode === "cut" && S.clip.paths.includes(path) ? " cut" : ""),
+      class: "row" + (S.sel.has(path) ? " sel" : "") + (i === S.focus ? " focus" : "") + (e.gone ? " gone" : "") + (S.clip && S.clip.mode === "cut" && S.clip.paths.includes(path) ? " cut" : ""),
       dataset: { i, drop: e.kind === "dir" ? path : null }, draggable: S.route === "browse" && !isTouch ? "true" : null,
     },
       h("span", { class: "tile-check", "data-check": "1", text: S.sel.has(path) ? "✓" : "" }),
       h("span", { class: "row-icon" }, icon),
       h("span", { class: "row-name", title: path, text: S.route === "search" ? path : e.name + (e.link ? "  🔗" : "") }),
       h("span", { class: "row-size", text: e.kind === "dir" ? "—" : fmtSize(e.size) }),
-      h("span", { class: "row-date", text: fmtDate(e.mtime) })));
+      h("span", { class: "row-date", text: e.gone ? "deleted since" : fmtDate(e.mtime) })));
   });
   return list;
 }
@@ -406,7 +411,7 @@ function paintSel() {
 }
 function updateSelbar() {
   const n = S.sel.size;
-  $("#selbar").hidden = n === 0 || S.route === "trash" || S.route === "samba";
+  $("#selbar").hidden = n === 0 || S.route === "trash" || S.route === "samba" || S.route === "time";
   if (!n) return;
   const sel = selected();
   const bytes = sel.reduce((a, e) => a + (e.kind === "file" ? e.size : 0), 0);
@@ -435,7 +440,7 @@ function clickItem(i, ev) {
 // ── open & viewer ──────────────────────────────────────────────────────
 function openEntry(e) {
   const path = entryPath(e);
-  if (e.kind === "dir") return go(path);
+  if (e.kind === "dir") return e.snap ? goTime(e.snap, path) : go(path);
   const files = S.entries.filter((x) => x.kind === "file");
   openViewer(files, files.findIndex((x) => entryPath(x) === path));
 }
@@ -465,16 +470,16 @@ async function showViewerItem() {
   $("#viewer-icon").textContent = iconFor(e);
   $("#viewer-name").textContent = e.name;
   $("#viewer-meta").textContent = `${fmtSize(e.size)} · ${fmtDate(e.mtime)} · ${V.i + 1}/${V.list.length}`;
-  $("#viewer-dl").href = rawUrl(path, true);
-  $("#viewer-open").href = rawUrl(path);
+  $("#viewer-dl").href = rawUrl(path, true, e.snap);
+  $("#viewer-open").href = rawUrl(path, false, e.snap);
   $("#viewer-prev").hidden = $("#viewer-next").hidden = V.list.length < 2;
-  $("#viewer-edit").hidden = !["text", "md"].includes(kind) || e.size > 4 * 1024 * 1024;
+  $("#viewer-edit").hidden = !!e.snap || !["text", "md"].includes(kind) || e.size > 4 * 1024 * 1024;
   const media = V.list.filter((x) => ["image", "video"].includes(kindOf(x)));
   const strip = $("#viewer-strip");
   if (["image", "video"].includes(kind) && media.length > 1) {
     strip.hidden = false;
     strip.replaceChildren(...media.map((m) => {
-      const img = h("img", { src: hasThumb(m) ? thumbUrl(entryPath(m)) : "", loading: "lazy", alt: m.name, title: m.name, class: m === e ? "on" : "" });
+      const img = h("img", { src: hasThumb(m) ? thumbUrl(entryPath(m), m.snap) : "", loading: "lazy", alt: m.name, title: m.name, class: m === e ? "on" : "" });
       img.addEventListener("click", () => { V.i = V.list.indexOf(m); showViewerItem(); });
       return img;
     }));
@@ -482,23 +487,23 @@ async function showViewerItem() {
   } else strip.hidden = true;
 
   if (kind === "image") {
-    const img = h("img", { class: "full", src: rawUrl(path), alt: e.name, draggable: "false" });
+    const img = h("img", { class: "full", src: rawUrl(path, false, e.snap), alt: e.name, draggable: "false" });
     img.addEventListener("load", () => { $("#viewer-meta").textContent = `${img.naturalWidth}×${img.naturalHeight} · ${fmtSize(e.size)} · ${V.i + 1}/${V.list.length}`; });
     stage.replaceChildren(img); wireZoom(img);
   } else if (kind === "video") {
-    stage.replaceChildren(h("video", { src: rawUrl(path), controls: true, autoplay: true, playsinline: true, preload: "metadata" }));
+    stage.replaceChildren(h("video", { src: rawUrl(path, false, e.snap), controls: true, autoplay: true, playsinline: true, preload: "metadata" }));
   } else if (kind === "audio") {
     const disc = h("div", { class: "audio-disc emoji", text: "🎵" });
-    const audio = h("audio", { src: rawUrl(path), controls: true, autoplay: true });
+    const audio = h("audio", { src: rawUrl(path, false, e.snap), controls: true, autoplay: true });
     audio.addEventListener("play", () => disc.classList.add("playing"));
     audio.addEventListener("pause", () => disc.classList.remove("playing"));
     stage.replaceChildren(h("div", { class: "audio-card" }, disc, h("div", { text: e.name }), audio));
   } else if (kind === "pdf") {
-    stage.replaceChildren(h("iframe", { src: rawUrl(path), title: e.name }));
+    stage.replaceChildren(h("iframe", { src: rawUrl(path, false, e.snap), title: e.name }));
   } else if (kind === "md" || kind === "text") {
     stage.replaceChildren(h("div", { class: "loading", text: "decoding…" }));
     try {
-      const t = await api("GET", "/api/text?path=" + enc(path));
+      const t = await api("GET", e.snap ? `/api/snap/text?path=${enc(path)}&snap=${e.snap}` : "/api/text?path=" + enc(path));
       if (V.list[V.i] !== e) return;
       stage.replaceChildren(kind === "md" ? renderMarkdown(t.text, parentOf(path)) : renderCode(t.text, e.ext));
     } catch (err) { stage.replaceChildren(noPreview(e, path, err.message)); }
@@ -508,7 +513,7 @@ function noPreview(e, path, why) {
   return h("div", { class: "nopreview" },
     h("div", { class: "big-emoji emoji", text: iconFor(e) }),
     h("div", { text: why || "No preview for this kind of file." }),
-    h("a", { class: "btn btn-primary", href: rawUrl(path, true), text: "⬇ Download " + fmtSize(e.size) }));
+    h("a", { class: "btn btn-primary", href: rawUrl(path, true, e.snap), text: "⬇ Download " + fmtSize(e.size) }));
 }
 function wireZoom(img) {
   const apply = () => { img.style.transform = `translate(${V.tx}px, ${V.ty}px) scale(${V.zoom})`; img.classList.toggle("zoomed", V.zoom > 1); };
@@ -697,7 +702,8 @@ async function doTransfer(paths, dest, copy) {
   } catch (e) { fail(e); }
 }
 function doDownload(entries) {
-  if (entries.length === 1 && entries[0].kind === "file") { location.href = rawUrl(entryPath(entries[0]), true); return; }
+  if (entries.length === 1 && entries[0].kind === "file") { location.href = rawUrl(entryPath(entries[0]), true, entries[0].snap); return; }
+  if (entries.some((e) => e.snap)) { entries.filter((e) => e.kind === "file").forEach((e, i) => setTimeout(() => { location.href = rawUrl(entryPath(e), true, e.snap); }, i * 400)); return; }
   location.href = "/api/zip?" + entries.map((e) => "p=" + enc(entryPath(e))).join("&");
   toast("📦 zipping… the download starts when it's packed");
 }
@@ -786,19 +792,23 @@ function itemMenu(x, y) {
   showCtx(x, y, [
     one && { icon: one.kind === "dir" ? "📂" : "👁️", label: one.kind === "dir" ? "Open" : "Preview", key: "↵", run: () => openEntry(one) },
     one && S.route === "search" && { icon: "📂", label: "Show in folder", run: () => { const p = entryPath(one); go(parentOf(p)); setTimeout(() => focusPath(p), 400); } },
-    canEdit(one) && { icon: "✏️", label: S.listing && S.listing.writable ? "Edit" : "Open in editor", key: "E", run: () => openEditor(entryPath(one)) },
+    S.route === "time" && { icon: "♻️", label: sel.length > 1 ? `Restore ${sel.length} here (replace current)` : "Restore (replace current)", run: () => timeRestore(sel, true) },
+    S.route === "time" && { icon: "🧬", label: "Restore as a copy", run: () => timeRestore(sel, false) },
+    S.route === "time" && "-",
+    S.route !== "time" && canEdit(one) && { icon: "✏️", label: S.listing && S.listing.writable ? "Edit" : "Open in editor", key: "E", run: () => openEditor(entryPath(one)) },
     { icon: "⬇️", label: sel.length > 1 || (one && one.kind === "dir") ? "Download as zip" : "Download", run: () => doDownload(sel) },
     "-",
-    { icon: "⧉", label: "Copy", key: "Ctrl+C", run: () => clipSet("copy") },
+    S.route !== "time" && { icon: "⧉", label: "Copy", key: "Ctrl+C", run: () => clipSet("copy") },
     writable && { icon: "✂️", label: "Cut", key: "Ctrl+X", run: () => clipSet("cut") },
-    { icon: "📋", label: "Copy to…", run: () => moveOrCopy(sel, true) },
+    S.route !== "time" && { icon: "📋", label: "Copy to…", run: () => moveOrCopy(sel, true) },
     writable && { icon: "➜", label: "Move to…", run: () => moveOrCopy(sel, false) },
     writable && one && { icon: "✏️", label: "Rename", key: "F2", run: () => doRename(one) },
     writable && one && one.kind === "file" && { icon: "🧬", label: "Duplicate", run: () => doTransfer([entryPath(one)], S.path, true) },
     "-",
     one && one.kind === "dir" && S.route === "browse" && { icon: "🔌", label: "Share via Samba…", run: () => shareDialog(null, { name: one.name.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40), path: entryPath(one) }) },
-    one && { icon: "🔗", label: "Copy Samba path", run: () => { const root = S.roots.find((r) => r.id === entryPath(one).split("/")[0]); copyText(`\\\\${S.session.host}\\${root.name}\\${entryPath(one).split("/").slice(1).join("\\")}`, "Samba path"); } },
-    one && { icon: "ⓘ", label: "Properties", key: "I", run: () => showProps(one) },
+    one && S.route !== "time" && { icon: "🔗", label: "Copy Samba path", run: () => { const root = S.roots.find((r) => r.id === entryPath(one).split("/")[0]); copyText(`\\\\${S.session.host}\\${root.name}\\${entryPath(one).split("/").slice(1).join("\\")}`, "Samba path"); } },
+    one && one.kind === "file" && S.route === "browse" && { icon: "🕘", label: "Versions…", key: "V", run: () => showVersions(one) },
+    one && S.route !== "time" && { icon: "ⓘ", label: "Properties", key: "I", run: () => showProps(one) },
     writable && "-",
     writable && { icon: "🗑️", label: "Move to trash", key: "Del", danger: true, run: () => doTrash(sel) },
   ]);
@@ -1030,6 +1040,113 @@ async function closeEditor(force) {
   ED.dirty = false;
 }
 const canEdit = (e) => e && e.kind === "file" && e.size <= 4 * 1024 * 1024 && ["text", "md", "other"].includes(kindOf(e));
+
+// ── time machine ───────────────────────────────────────────────────────
+const TM = { root: null, snaps: [] };
+const goTime = (n, vpath) => { location.hash = `#/time/${n}/${encPath(vpath)}`; };
+async function loadTimeline(vpath) {
+  const root = vpath.split("/")[0];
+  if (TM.root === root && TM.snaps.length && Date.now() - TM.at < 60000) return;
+  const t = await api("GET", "/api/snap/timeline?path=" + enc(vpath));
+  TM.root = root; TM.snaps = t.snapshots; TM.config = t.config; TM.at = Date.now();
+}
+async function enterTime() {
+  try {
+    await loadTimeline(S.path);
+    if (!TM.snaps.length) { toast("No snapshots of this drive yet."); return; }
+    goTime(TM.snaps[0].number, S.path);
+  } catch (e) { fail(e); }
+}
+function snapLabel(sn) { return sn ? String(sn.date).slice(0, 16) : ""; }
+function timeStep(d) {
+  const i = TM.snaps.findIndex((x) => String(x.number) === String(S.snap));
+  const j = i + d;
+  if (j < 0) { go(S.path); return; }
+  if (j >= TM.snaps.length) { toast("That's the oldest snapshot."); return; }
+  goTime(TM.snaps[j].number, S.path);
+}
+function renderTimeline() {
+  const line = $("#timeline");
+  const oldestFirst = [...TM.snaps].reverse();
+  let lastDay = "";
+  line.replaceChildren(...oldestFirst.map((sn) => {
+    const day = String(sn.date).slice(0, 10);
+    const hour = String(sn.date).slice(11, 13);
+    const kind = sn.description === "timeline" || sn.cleanup === "timeline" ? (hour === "00" ? "daily" : "hourly") : "other";
+    const el = h("span", { class: `tick ${kind}` + (String(sn.number) === String(S.snap) ? " on" : "") + (day !== lastDay ? " daystart" : ""),
+      title: `#${sn.number} · ${snapLabel(sn)} · ${sn.description || sn.type}`, dataset: { day: new Date(day + "T12:00").toLocaleDateString(undefined, { month: "short", day: "numeric" }) } });
+    lastDay = day;
+    el.addEventListener("click", () => goTime(sn.number, S.path));
+    return el;
+  }));
+  const on = line.querySelector(".on"); if (on) on.scrollIntoView({ inline: "center", block: "nearest" });
+}
+async function showTime(n, vpath) {
+  S.route = "time"; S.snap = String(n); S.path = vpath; S.search = null; S.sel.clear(); S.focus = -1;
+  document.body.classList.add("time-travel");
+  $("#timebar").hidden = false;
+  const view = $("#view");
+  view.replaceChildren(h("div", { class: "loading", text: "rewinding…" }));
+  try { await loadTimeline(vpath); } catch (e) { fail(e); go(vpath); return; }
+  const sn = TM.snaps.find((x) => String(x.number) === S.snap);
+  $("#time-when").textContent = sn ? `${snapLabel(sn)} · snapshot #${sn.number}` : `snapshot #${S.snap}`;
+  renderTimeline();
+  try {
+    const l = await api("GET", `/api/snap/list?path=${enc(vpath)}&snap=${S.snap}`);
+    for (const e of l.entries) e.snap = S.snap;
+    S.listing = l;
+    S.entries = sortEntries(l.entries);
+    render();
+  } catch (e) {
+    renderCrumbs(); markNav();
+    view.replaceChildren(h("div", { class: "empty" }, h("div", { class: "empty-icon emoji", text: "🕳️" }), h("div", { text: e.message })));
+  }
+}
+async function timeRestore(entries, replace) {
+  const sn = TM.snaps.find((x) => String(x.number) === String(S.snap));
+  if (replace) {
+    const live = entries.filter((e) => !e.gone).length;
+    if (live && !(await confirmBox("Restore and replace?", `${live} current item${live > 1 ? "s go" : " goes"} to Holodrive's trash first (undoable), then the ${snapLabel(sn)} version takes ${live > 1 ? "their" : "its"} place.`, "♻ Restore"))) return;
+  }
+  let last = null;
+  for (const e of entries) {
+    try { last = await api("POST", "/api/snap/restore", { path: entryPath(e), snap: String(e.snap), replace, label: snapLabel(sn).replace(":", ".") }); }
+    catch (err) { fail(err); return; }
+  }
+  refreshTrashCount();
+  toast(`♻️ restored ${entries.length === 1 ? entries[0].name : entries.length + " items"}${replace ? "" : " as copies"}`, "ok",
+    { label: "Show", run: () => { go(S.path); if (last) setTimeout(() => focusPath(last.path), 500); } });
+  showTime(S.snap, S.path);
+}
+async function showVersions(e) {
+  const path = entryPath(e);
+  let v;
+  try { v = await api("GET", "/api/snap/versions?path=" + enc(path)); } catch (err) { fail(err); return; }
+  const rows = [];
+  if (v.current) rows.push(h("div", { class: "ver-row now" },
+    h("div", {}, h("div", { class: "ver-when", text: "● Now" }), h("div", { class: "ver-meta", text: `${fmtSize(v.current.size)} · modified ${fmtDate(v.current.mtime)}` })),
+    h("span"), h("span", { class: "badge rw", text: "current" })));
+  for (const ver of v.versions) {
+    const item = { ...e, snap: String(ver.snapshot), size: ver.size, mtime: ver.mtime, path };
+    const delta = v.current ? ver.size - v.current.size : 0;
+    rows.push(h("div", { class: "ver-row" },
+      h("div", {}, h("div", { class: "ver-when", text: String(ver.date).slice(0, 16) }),
+        h("div", { class: "ver-meta", text: `${fmtSize(ver.size)}${v.current ? ` (${delta >= 0 ? "+" : ""}${fmtSize(Math.abs(delta)).replace(/^/, delta < 0 ? "−" : "")})` : ""} · snapshot #${ver.snapshot}` })),
+      h("span"),
+      h("div", { class: "ver-actions" },
+        h("button", { class: "btn", type: "button", text: "👁 Preview", onclick: () => { closeModal(); openViewer([item], 0); } }),
+        h("a", { class: "btn", href: rawUrl(path, true, item.snap), text: "⬇" }),
+        h("button", { class: "btn", type: "button", text: "🧬 As copy", onclick: async () => { try { const r = await api("POST", "/api/snap/restore", { path, snap: item.snap, replace: false, label: String(ver.date).slice(0, 16).replace(":", ".") }); closeModal(); await refresh(); focusPath(r.path); toast("🧬 restored as " + baseName(r.path), "ok"); } catch (err) { fail(err); } } }),
+        h("button", { class: "btn", type: "button", text: "♻ Restore", onclick: async () => {
+          if (!(await confirmBox("Restore this version?", `The current ${e.name} goes to Holodrive's trash first (undoable).`, "♻ Restore"))) return;
+          try { await api("POST", "/api/snap/restore", { path, snap: item.snap, replace: true }); await refresh(); refreshTrashCount(); toast("♻️ " + e.name + " restored", "ok"); } catch (err) { fail(err); }
+        } }))));
+  }
+  if (!v.versions.length) rows.push(h("div", { class: "muted", style: { padding: "10px" }, text: "No older versions in the snapshots — it hasn't changed since the oldest one." }));
+  modal(`🕘 Versions of ${e.name}`, h("div", { style: { display: "grid", gap: "6px", maxHeight: "60vh", overflow: "auto" } }, rows),
+    [h("button", { class: "btn btn-primary", type: "button", text: "Close", onclick: closeModal })]);
+  $(".modal-window").classList.add("wide");
+}
 
 // ── Samba panel ────────────────────────────────────────────────────────
 const SMB = { data: null };
@@ -1268,19 +1385,22 @@ function onKey(ev) {
     case "End": return move(n);
     case "Enter": if (S.focus >= 0) { ev.preventDefault(); openEntry(S.entries[S.focus]); } return;
     case " ": if (S.focus >= 0 && S.entries[S.focus].kind === "file") { ev.preventDefault(); openEntry(S.entries[S.focus]); } return;
-    case "Backspace": if (S.route === "browse" && S.path.includes("/")) { ev.preventDefault(); go(parentOf(S.path)); } return;
+    case "Backspace": if ((S.route === "browse" || S.route === "time") && S.path.includes("/")) { ev.preventDefault(); S.route === "time" ? goTime(S.snap, parentOf(S.path)) : go(parentOf(S.path)); } return;
     case "Delete": if (S.sel.size && S.listing && S.listing.writable) { ev.preventDefault(); doTrash(selected()); } return;
     case "F2": if (S.sel.size === 1 && S.listing && S.listing.writable) { ev.preventDefault(); doRename(selected()[0]); } return;
-    case "Escape": S.sel.clear(); paintSel(); return;
+    case "Escape": if (!S.sel.size && S.route === "time") { go(S.path); return; } S.sel.clear(); paintSel(); return;
     case "/": ev.preventDefault(); $("#search-input").focus(); return;
   }
   if (mod && ev.key === "a") { ev.preventDefault(); setSel(S.entries.map(entryPath)); return; }
-  if (mod && ev.key === "c") { if (S.sel.size) { ev.preventDefault(); clipSet("copy"); } return; }
+  if (mod && ev.key === "c") { if (S.sel.size && S.route !== "time") { ev.preventDefault(); clipSet("copy"); } return; }
   if (mod && ev.key === "x") { if (S.sel.size && S.listing.writable) { ev.preventDefault(); clipSet("cut"); } return; }
   if (mod && ev.key === "v") { if (S.clip && S.listing && S.listing.writable) { ev.preventDefault(); clipPaste(); } return; }
   if (mod && ev.key === "k") { ev.preventDefault(); $("#search-input").focus(); return; }
   if (mod || ev.altKey) return;
   const writable = S.listing && S.listing.writable && S.route === "browse";
+  if (S.route === "time" && (ev.key === "[" || ev.key === "]")) { timeStep(ev.key === "[" ? 1 : -1); return; }
+  if (ev.key === "t" && (S.route === "browse" || S.route === "time")) { S.route === "time" ? go(S.path) : enterTime(); return; }
+  if (ev.key === "v" && S.sel.size === 1 && S.route === "browse" && selected()[0].kind === "file") { showVersions(selected()[0]); return; }
   if (ev.key === "g") { setView("grid"); } else if (ev.key === "l") { setView("list"); }
   else if (ev.key === "u" && writable) openUploadPanel(S.path);
   else if (ev.key === "e" && S.sel.size === 1 && canEdit(selected()[0])) openEditor(entryPath(selected()[0]));
@@ -1398,6 +1518,10 @@ function wireApp() {
   $("#viewer-edit").addEventListener("click", () => { const e = V.list[V.i]; if (e) openEditor(entryPath(e)); });
   window.addEventListener("beforeunload", (ev) => { if (ED.dirty) { ev.preventDefault(); ev.returnValue = ""; } });
   $("#mkdir-btn").addEventListener("click", doMkdir);
+  $("#time-btn").addEventListener("click", enterTime);
+  $("#time-exit").addEventListener("click", () => go(S.path));
+  $("#time-older").addEventListener("click", () => timeStep(1));
+  $("#time-newer").addEventListener("click", () => timeStep(-1));
   $("#newfile-btn").addEventListener("click", doNewFile);
   $("#uploads-close").addEventListener("click", () => { $("#uploads").hidden = true; if (!U.active && !U.queue.length) { $("#uploads-list").replaceChildren(); U.done = U.total = U.failed = 0; } });
   $$(".seg-btn").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));

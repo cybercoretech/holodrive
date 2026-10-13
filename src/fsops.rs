@@ -318,7 +318,7 @@ pub fn rename(cfg: &Config, vpath: &str, new_name: &str) -> FsResult<String> {
     Ok(join_vpath(&r.root.id, &r.rel.with_file_name(new_name)))
 }
 
-fn copy_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+pub fn copy_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     let meta = std::fs::symlink_metadata(src)?;
     if meta.file_type().is_symlink() {
         std::os::unix::fs::symlink(std::fs::read_link(src)?, dst)

@@ -14,7 +14,7 @@
 use crate::auth::{self, Auth, LoginBrake};
 use crate::config::Config;
 use crate::fsops::{self, FsError};
-use crate::{cybergrid, media, samba, smbconf, views};
+use crate::{cybergrid, media, samba, smbconf, snapshots, views};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
@@ -65,6 +65,13 @@ pub fn router(state: Shared) -> Router {
         .route("/api/trash", get(trash_list).post(trash))
         .route("/api/trash/restore", post(restore))
         .route("/api/trash/purge", post(purge))
+        .route("/api/snap/timeline", get(snap_timeline))
+        .route("/api/snap/list", get(snap_list))
+        .route("/api/snap/versions", get(snap_versions))
+        .route("/api/snap/raw", get(snap_raw))
+        .route("/api/snap/thumb", get(snap_thumb))
+        .route("/api/snap/text", get(snap_text))
+        .route("/api/snap/restore", post(snap_restore))
         .route("/api/samba", get(samba_overview))
         .route("/api/samba/share", post(samba_share))
         .route("/api/samba/remove", post(samba_remove))
@@ -143,7 +150,7 @@ async fn guard(State(s): State<Shared>, req: Request, next: Next) -> Response {
             }
         }
     }
-    let raw = path == "/api/raw";
+    let raw = path == "/api/raw" || path == "/api/snap/raw";
     let mut resp = next.run(req).await;
     let hs = resp.headers_mut();
     hs.insert(
@@ -398,13 +405,17 @@ async fn raw(State(s): State<Shared>, Query(q): Query<RawQ>, req: Request) -> Re
         Ok(p) => p,
         Err(r) => return r,
     };
+    serve_file(abs, q.dl.is_some(), req).await
+}
+
+async fn serve_file(abs: std::path::PathBuf, dl: bool, req: Request) -> Response {
     let name = abs
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let mime = mime_guess::from_path(&abs).first_or_octet_stream();
     let essence = mime.essence_str().to_string();
-    let inline_ok = q.dl.is_none()
+    let inline_ok = !dl
         && (essence.starts_with("image/") && essence != "image/svg+xml"
             || essence.starts_with("video/")
             || essence.starts_with("audio/")
@@ -840,4 +851,96 @@ async fn samba_restore(State(_s): State<Shared>, Json(b): Json<NameBody>) -> Res
         &["restore", &b.name],
         None
     ))))
+}
+
+// ── time machine ───────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct SnapQ {
+    path: String,
+    snap: String,
+    #[serde(default)]
+    dl: Option<String>,
+}
+
+async fn snap_timeline(State(s): State<Shared>, Query(q): Query<PathQ>) -> Response {
+    let cfg = s.cfg.clone();
+    reply!(blocking(move || snapshots::timeline(&cfg, &q.path)))
+}
+
+async fn snap_list(State(s): State<Shared>, Query(q): Query<SnapQ>) -> Response {
+    let cfg = s.cfg.clone();
+    reply!(blocking(move || snapshots::list(&cfg, &q.path, &q.snap)))
+}
+
+async fn snap_versions(State(s): State<Shared>, Query(q): Query<PathQ>) -> Response {
+    let cfg = s.cfg.clone();
+    reply!(blocking(move || snapshots::versions(&cfg, &q.path)))
+}
+
+async fn snap_text(State(s): State<Shared>, Query(q): Query<SnapQ>) -> Response {
+    let cfg = s.cfg.clone();
+    reply!(blocking(move || snapshots::read_text(
+        &cfg, &q.path, &q.snap
+    )))
+}
+
+async fn snap_raw(State(s): State<Shared>, Query(q): Query<SnapQ>, req: Request) -> Response {
+    let cfg = s.cfg.clone();
+    let dl = q.dl.is_some();
+    let found = blocking(move || {
+        let p = snapshots::file(&cfg, &q.path, &q.snap)?;
+        if !p.is_file() {
+            return Err(FsError(400, "not a file".into()));
+        }
+        Ok(p)
+    })
+    .await;
+    match found {
+        Ok(p) => serve_file(p, dl, req).await,
+        Err(r) => r,
+    }
+}
+
+async fn snap_thumb(State(s): State<Shared>, Query(q): Query<SnapQ>) -> Response {
+    let cfg = s.cfg.clone();
+    let Ok(_permit) = s.thumbs.acquire().await else {
+        return err(503, "busy");
+    };
+    let made = blocking(move || {
+        let p = snapshots::file(&cfg, &q.path, &q.snap)?;
+        media::thumbnail(&p).ok_or_else(|| FsError(404, "no thumbnail".into()))
+    })
+    .await;
+    match made {
+        Ok(p) => match tokio::fs::read(&p).await {
+            Ok(bytes) => (
+                [
+                    (header::CONTENT_TYPE, "image/jpeg"),
+                    (header::CACHE_CONTROL, "private, max-age=86400"),
+                ],
+                bytes,
+            )
+                .into_response(),
+            Err(e) => err(500, e),
+        },
+        Err(r) => r,
+    }
+}
+
+#[derive(Deserialize)]
+struct RestoreBody {
+    path: String,
+    snap: String,
+    #[serde(default)]
+    replace: bool,
+    #[serde(default)]
+    label: String,
+}
+
+async fn snap_restore(State(s): State<Shared>, Json(b): Json<RestoreBody>) -> Response {
+    let cfg = s.cfg.clone();
+    reply!(blocking(move || snapshots::restore(
+        &cfg, &b.path, &b.snap, b.replace, &b.label
+    )))
 }
