@@ -976,19 +976,24 @@ function edDirty() {
   const d = ED.inst ? ED.inst.text() !== ED.saved : false;
   if (d !== ED.dirty) { ED.dirty = d; $("#ed-dirty").hidden = !d; }
 }
-async function openEditor(path) {
+async function openEditor(path, custom) {
   let t, lib;
-  try { [t, lib] = await Promise.all([api("GET", "/api/text?path=" + enc(path)), loadEditor()]); }
+  try { [t, lib] = await Promise.all([custom ? Promise.resolve(custom.doc) : api("GET", "/api/text?path=" + enc(path)), loadEditor()]); }
   catch (e) { fail(e); return; }
   closeViewer();
   if (ED.inst) ED.inst.destroy();
+  ED.custom = custom || null;
   ED.path = path; ED.mtime = t.mtime; ED.saved = t.text; ED.dirty = false; ED.writable = t.writable;
   const name = baseName(path);
-  $("#ed-title").textContent = path;
+  $("#ed-title").textContent = custom ? custom.title : path;
+  $("#ed-gui").hidden = !(custom && custom.gui);
   $("#ed-icon").textContent = iconFor({ kind: "file", name, ext: (name.includes(".") ? name.split(".").pop() : "").toLowerCase() });
   $("#ed-dirty").hidden = true;
   $("#ed-ro").hidden = t.writable;
   $("#ed-save").hidden = !t.writable;
+  ED.guiText = null;
+  $("#ed-vim").hidden = false;
+  $("#ed-gui").textContent = "🧩 GUI";
   $("#ed-vim").classList.toggle("on", ED.vim);
   $("#ed-hint").textContent = ED.vim ? ":w save · :q close · :wq · jk = Esc" : "Ctrl+S save";
   $("#editor").hidden = false;
@@ -1006,8 +1011,19 @@ async function openEditor(path) {
   ED.inst.focus();
 }
 async function saveEditor(force) {
+  if (!ED.inst && ED.guiText && ED.writable) {
+    const t = ED.guiText();
+    const ok = await confSave(t);
+    if (ok) { ED.saved = t; ED.dirty = false; $("#ed-dirty").hidden = true; }
+    return ok;
+  }
   if (!ED.inst || !ED.writable) return false;
   const text = ED.inst.text();
+  if (ED.custom) {
+    const ok = await ED.custom.save(text);
+    if (ok) { ED.saved = text; edDirty(); }
+    return ok;
+  }
   try {
     const r = await api("POST", "/api/text", { path: ED.path, text, mtime: force ? null : ED.mtime });
     ED.mtime = r.mtime; ED.saved = text; edDirty();
@@ -1038,6 +1054,9 @@ async function closeEditor(force) {
   document.body.style.overflow = "";
   if (ED.inst) { ED.inst.destroy(); ED.inst = null; }
   ED.dirty = false;
+  ED.guiText = null; $("#ed-vim").hidden = false;
+  const after = ED.custom && ED.custom.onClose; ED.custom = null;
+  if (after) after();
 }
 const canEdit = (e) => e && e.kind === "file" && e.size <= 4 * 1024 * 1024 && ["text", "md", "other"].includes(kindOf(e));
 
@@ -1210,6 +1229,184 @@ async function showBackups() {
   modal("smb.conf backups", list, [h("button", { class: "btn btn-primary", type: "button", text: "Close", onclick: closeModal })]);
   $(".modal-window").classList.add("wide");
 }
+// ── smb.conf editor: Vim (CodeMirror) and GUI, one save path ──────────
+const CONF = { hash: null };
+async function confLoad() {
+  const c = await api("GET", "/api/samba/conf");
+  CONF.hash = c.hash;
+  return c;
+}
+async function confSave(text, accept) {
+  const r = await fetch("/api/samba/conf", { method: "POST", credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-Holodrive-Csrf": CSRF || "" },
+    body: JSON.stringify({ text, hash: CONF.hash, accept_warnings: !!accept }) });
+  const d = await r.json().catch(() => ({ error: r.statusText }));
+  if (r.ok) {
+    CONF.hash = d.data && d.data.hash || CONF.hash;
+    toast("🔌 " + d.message, "ok");
+    SMB.data = null;
+    return true;
+  }
+  if (r.status === 428) {
+    const go = await new Promise((resolve) => {
+      const done = (v) => { closeModal(); resolve(v); };
+      modal("⚠️ Weaker than before", h("div", { style: { display: "grid", gap: "8px" } },
+        h("p", { text: "This smb.conf is allowed, but:" }), h("ul", {}, d.warnings.map((w) => h("li", { text: w })))),
+        [h("button", { class: "btn", type: "button", text: "Go back", onclick: () => done(false) }),
+          h("button", { class: "btn btn-danger", type: "button", text: "Save anyway", onclick: () => done(true) })]);
+    });
+    return go ? confSave(text, true) : false;
+  }
+  modal("🛡️ Not saved", h("div", { style: { display: "grid", gap: "8px" } },
+    h("p", { text: d.error || "refused" }),
+    d.errors ? h("ul", {}, d.errors.map((e) => h("li", { text: e }))) : null,
+    h("p", { class: "muted", text: "Nothing was changed. Every save is checked by testparm and backed up first." })),
+    [h("button", { class: "btn btn-primary", type: "button", text: "Back to the editor", onclick: () => { closeModal(); if (ED.inst) ED.inst.focus(); } })]);
+  return false;
+}
+async function confVim(textOverride) {
+  let c;
+  try { c = await confLoad(); } catch (e) { fail(e); return; }
+  const text = textOverride != null ? textOverride : c.text;
+  await openEditor("smb.conf", {
+    title: "/etc/samba/smb.conf · Vim", gui: true,
+    doc: { text, mtime: null, writable: c.helper },
+    save: (t) => confSave(t),
+    onClose: () => { if (S.route === "samba") showSamba(); },
+  });
+  if (textOverride != null && textOverride !== c.text) { ED.saved = c.text; edDirty(); }
+}
+
+// smb.conf ⇄ model that keeps comments, blank lines and order
+function confParse(text) {
+  const m = { pre: [], sections: [] };
+  let cur = null, pending = [];
+  const lines = text.replace(/\n$/, "").split("\n");
+  for (const line of lines) {
+    const t = line.trim();
+    const hd = t.match(/^\[(.+)\]$/);
+    if (hd) { cur = { name: hd[1].trim(), before: pending, items: [] }; m.sections.push(cur); pending = []; continue; }
+    const kv = !t.startsWith("#") && !t.startsWith(";") && t.includes("=") ? t.match(/^([^=]+?)\s*=\s*(.*)$/) : null;
+    if (kv) {
+      (cur ? cur.items : m.pre).push(...pending.map((raw) => ({ raw })));
+      pending = [];
+      (cur ? cur.items : m.pre).push({ key: kv[1].trim(), value: kv[2].trim() });
+    } else pending.push(line);
+  }
+  (cur ? cur.items : m.pre).push(...pending.map((raw) => ({ raw })));
+  return m;
+}
+function confText(m) {
+  const out = [];
+  const item = (it) => (it.raw != null ? it.raw : `   ${it.key} = ${it.value}`);
+  for (const it of m.pre) out.push(it.raw != null ? it.raw : `${it.key} = ${it.value}`);
+  for (const sec of m.sections) {
+    out.push(...sec.before, `[${sec.name}]`, ...sec.items.filter((it) => it.raw != null || it.key.trim()).map(item));
+  }
+  return out.join("\n") + "\n";
+}
+const CONF_DENY_FRAG = ["command", "script", "exec", "program", "include", "config file", "config backend", "magic", "panic action", "dfree", "quota", "passdb backend", "smb passwd file", "username map", "registry shares", "usershare path"];
+const CONF_DENY_KEY = ["force user", "force group", "admin users", "guest ok", "public", "guest only", "guest account", "root directory", "root dir", "root", "allow insecure wide links"];
+function confKeyProblem(sec, key, value) {
+  const k = key.trim().toLowerCase().replace(/\s+/g, " ");
+  if (!k) return "";
+  if (CONF_DENY_KEY.includes(k) || CONF_DENY_FRAG.some((f) => k.includes(f))) return "not allowed from Holodrive";
+  if (k === "map to guest" && value.trim().toLowerCase() !== "never") return "only “never”";
+  if (k === "wide links" && /^(yes|true|1|on)$/i.test(value.trim())) return "not allowed";
+  if (k === "path" && sec.toLowerCase() === "global") return "path belongs in a share";
+  return "";
+}
+const CONF_PARAMS = ["comment", "path", "read only", "browseable", "available", "valid users", "invalid users", "write list", "read list", "create mask", "directory mask", "force create mode", "force directory mode", "hide dot files", "hide files", "veto files", "delete veto files", "follow symlinks", "oplocks", "inherit permissions", "inherit acls", "store dos attributes", "vfs objects", "case sensitive", "preserve case", "server string", "workgroup", "netbios name", "interfaces", "bind interfaces only", "hosts allow", "hosts deny", "server min protocol", "server max protocol", "server smb encrypt", "server signing", "smb ports", "disable netbios", "map to guest", "restrict anonymous", "load printers", "disable spoolss", "log level", "max log size", "logging", "socket options", "use sendfile", "aio read size", "aio write size", "min receivefile size", "deadtime", "max connections", "ntlm auth", "server role"];
+
+function confGui(textOverride) {
+  return confLoad().then((c) => {
+    const m = confParse(textOverride != null ? textOverride : c.text);
+    const original = c.text;
+    closeViewer();
+    if (ED.inst) { ED.inst.destroy(); ED.inst = null; }
+    ED.custom = { gui: true, onClose: () => { if (S.route === "samba") showSamba(); } };
+    ED.saved = original; ED.dirty = false; ED.writable = c.helper;
+    $("#ed-title").textContent = "/etc/samba/smb.conf · GUI";
+    $("#ed-icon").textContent = "🧩";
+    $("#ed-dirty").hidden = true; $("#ed-ro").hidden = c.helper; $("#ed-save").hidden = !c.helper;
+    $("#ed-gui").hidden = false; $("#ed-gui").textContent = "⌨️ Vim";
+    $("#ed-vim").hidden = true;
+    $("#ed-hint").textContent = "comments and order are kept · same safety rails as the Vim mode";
+    $("#ed-mode").textContent = "GUI"; $("#ed-mode").className = "ed-mode visual";
+    $("#ed-lang").textContent = "smb.conf";
+    $("#editor").hidden = false;
+    document.body.style.overflow = "hidden";
+    const body = $("#ed-body");
+    const dl = h("datalist", { id: "smb-params" }, CONF_PARAMS.map((p) => h("option", { value: p })));
+    const mark = () => {
+      const text = confText(m);
+      ED.dirty = text !== ED.saved; $("#ed-dirty").hidden = !ED.dirty;
+      const shares = m.sections.filter((x) => x.name.toLowerCase() !== "global").length;
+      const bad = $$(".kv-row.bad", body).length;
+      $("#ed-pos").textContent = `${m.sections.length} sections · ${shares} shares${bad ? ` · ⚠ ${bad} not allowed` : ""}`;
+    };
+    ED.guiText = () => confText(m);
+    const draw = () => {
+      const cards = m.sections.map((sec, si) => {
+        const isGlobal = sec.name.toLowerCase() === "global";
+        const pathIt = sec.items.find((it) => it.key && it.key.toLowerCase() === "path");
+        const rows = h("div", { class: "kv-rows" });
+        sec.items.forEach((it, ii) => {
+          if (it.raw != null) {
+            if (!it.raw.trim()) return;
+            const inp = h("input", { class: "kv-comment", value: it.raw.trim(), spellcheck: "false" });
+            inp.addEventListener("input", () => { it.raw = "   " + inp.value; mark(); });
+            rows.append(h("div", { class: "kv-row comment" }, inp, h("button", { class: "kv-x", type: "button", title: "remove", text: "✕", onclick: () => { sec.items.splice(ii, 1); draw(); mark(); } })));
+            return;
+          }
+          const key = h("input", { class: "kv-key", value: it.key, list: "smb-params", spellcheck: "false", placeholder: "setting" });
+          const isBool = /^(yes|no|true|false)$/i.test(it.value);
+          const val = h("input", { class: "kv-val", value: it.value, spellcheck: "false", placeholder: "value" });
+          const row = h("div", { class: "kv-row" }, key, h("span", { class: "kv-eq", text: "=" }), val);
+          const prob = h("span", { class: "kv-prob" });
+          const check = () => { const p = confKeyProblem(sec.name, key.value, val.value); prob.textContent = p ? "⛔ " + p : ""; row.classList.toggle("bad", !!p); };
+          if (isBool) {
+            const sw = h("input", { type: "checkbox" }); sw.checked = /^(yes|true)$/i.test(it.value);
+            sw.addEventListener("change", () => { it.value = sw.checked ? "yes" : "no"; val.value = it.value; check(); mark(); });
+            row.append(h("label", { class: "switch", title: "yes / no" }, sw, h("i")));
+          }
+          if (it.key.toLowerCase() === "path") row.append(h("button", { class: "btn kv-pick", type: "button", text: "📁", title: "pick a folder", onclick: async () => {
+            const d = await pickFolder("Folder for [" + sec.name + "]", "Use this folder", S.roots[0] && S.roots[0].id);
+            if (!d) { confGui(confText(m)); return; }
+            try { const st = await api("GET", "/api/stat?path=" + enc(d)); it.value = st.abs; } catch (e) { fail(e); }
+            confGui(confText(m));
+          } }));
+          row.append(prob, h("button", { class: "kv-x", type: "button", title: "remove setting", text: "✕", onclick: () => { sec.items.splice(ii, 1); draw(); mark(); } }));
+          key.addEventListener("input", () => { it.key = key.value; check(); mark(); });
+          val.addEventListener("input", () => { it.value = val.value; check(); mark(); });
+          check();
+          rows.append(row);
+        });
+        const nameIn = h("input", { class: "sec-name", value: sec.name, disabled: isGlobal, spellcheck: "false" });
+        nameIn.addEventListener("input", () => { sec.name = nameIn.value.trim(); mark(); });
+        return h("details", { class: "sec-card" + (isGlobal ? " global" : ""), open: true },
+          h("summary", {},
+            h("span", { class: "sec-icon emoji", text: isGlobal ? "🌐" : "📂" }),
+            h("span", { class: "sec-bracket", text: "[" }), nameIn, h("span", { class: "sec-bracket", text: "]" }),
+            pathIt ? h("span", { class: "sec-path", text: pathIt.value }) : null,
+            h("span", { class: "grow" }),
+            isGlobal ? h("span", { class: "badge", text: "server-wide" }) : h("button", { class: "btn btn-danger kv-del", type: "button", text: "🗑 Remove share", onclick: (ev) => { ev.preventDefault(); m.sections.splice(si, 1); draw(); mark(); } })),
+          rows,
+          h("button", { class: "btn kv-add", type: "button", text: "＋ setting", onclick: () => { sec.items.push({ key: "", value: "" }); draw(); mark(); const ks = $$(".sec-card")[si].querySelectorAll(".kv-key"); ks[ks.length - 1].focus(); } }));
+      });
+      const add = h("button", { class: "btn btn-primary", type: "button", text: "＋ New share", onclick: async () => {
+        const d = await pickFolder("Folder to share", "🔌 Share this", S.roots[0] && S.roots[0].id);
+        let abs = "", nm = "NewShare";
+        if (d) { try { abs = (await api("GET", "/api/stat?path=" + enc(d))).abs; nm = baseName(d).replace(/[^A-Za-z0-9_-]+/g, "-").slice(0, 40) || nm; } catch (e) { fail(e); } }
+        m.sections.push({ name: nm, before: [""], items: [{ key: "path", value: abs }, { key: "read only", value: "no" }] });
+        confGui(confText(m));
+      } });
+      body.replaceChildren(h("div", { class: "smb-gui" }, dl, h("div", { class: "gui-top" }, add, h("span", { class: "muted", text: "Edit any setting; dangerous ones are refused (⛔). Save checks everything again with testparm." })), ...cards));
+    };
+    draw(); mark();
+  }).catch(fail);
+}
+
 async function showSamba() {
   S.route = "samba"; S.sel.clear(); updateSelbar();
   $("#crumbs").replaceChildren(h("span", { class: "crumb last", text: "🔌 Samba shares" }));
@@ -1236,6 +1433,8 @@ async function showSamba() {
     h("button", { class: "btn", type: "button", text: "🔄 Reload config", disabled: !d.helper, onclick: () => smbAct({ action: "reload" }) }),
     h("button", { class: "btn", type: "button", text: "⟳ Restart smbd", disabled: !d.helper, onclick: async () => { if (await confirmBox("Restart smbd?", "Everyone connected is dropped for a moment (darkbox's mount reconnects by itself).", "Restart")) smbAct({ action: "restart" }); } }),
     h("button", { class: "btn", type: "button", text: "🕘 Backups", disabled: !d.helper, onclick: showBackups }),
+    h("button", { class: "btn", type: "button", text: "🧩 Edit smb.conf", title: "every setting as forms", onclick: () => confGui() }),
+    h("button", { class: "btn", type: "button", text: "⌨️ smb.conf in Vim", title: "the raw file in the Vim editor", onclick: () => confVim() }),
     h("span", { class: "grow" }),
     h("span", { class: "muted", text: "every change: validated with testparm · backed up · logged" }));
   const parts = [status, actions];
@@ -1342,6 +1541,188 @@ async function showSearch(vpath, q) {
   } catch (e) { fail(e); }
 }
 
+// ── : command line (vim style) ─────────────────────────────────────────
+const CMDS = [
+  ["mkdir", "<folder>[/sub…]", "make folders (nested too)"], ["touch", "<file>", "make an empty file"],
+  ["e", "<file>", "edit a file (made if missing)"], ["cd", "<path> | .. | /drive", "go to a folder"],
+  ["rm", "<name>…", "move to trash (undoable)"], ["mv", "<name> <new name | folder>", "rename or move"],
+  ["cp", "<name> <folder>", "copy into a folder"], ["find", "<text>", "search this drive"],
+  ["share", "[name]", "share this folder over Samba"], ["time", "", "time machine for this folder"],
+  ["theme", "<name>", "switch theme on this device"], ["samba", "", "open the Samba panel"],
+  ["upload", "", "open the upload panel"], ["help", "", "list commands"],
+];
+const CMD_ALIAS = { md: "mkdir", edit: "e", del: "rm", move: "mv", copy: "cp", f: "find", tm: "time", h: "help", u: "upload", "?": "help" };
+const CMD = { hist: store.get("cmdhist", []), at: -1, opts: [], on: -1 };
+function cmdOpen(prefill = "") {
+  if (S.route !== "browse" && S.route !== "search" && S.route !== "time") return;
+  $("#cmdbar").hidden = false;
+  const inp = $("#cmd-input"); inp.value = prefill; inp.focus();
+  CMD.at = -1; cmdHint();
+}
+function cmdClose() { $("#cmdbar").hidden = true; $("#cmd-suggest").hidden = true; $("#cmd-input").blur(); }
+function splitArgs(s) {
+  const out = []; let cur = "", q = null;
+  for (const ch of s) {
+    if (q) { if (ch === q) q = null; else cur += ch; }
+    else if (ch === '"' || ch === "'") q = ch;
+    else if (ch === " ") { if (cur) { out.push(cur); cur = ""; } }
+    else cur += ch;
+  }
+  if (cur || s.endsWith(" ")) out.push(cur);
+  return out;
+}
+// "x" → S.path/x; "/shared/x" → absolute; ".." works anywhere
+function cmdPath(arg) {
+  if (!arg) return S.path;
+  if (arg.startsWith("/")) return normalize(arg.slice(1));
+  return normalize(S.path + "/" + arg);
+}
+function cmdCandidates(cmd, word) {
+  const dirsOnly = ["cd", "mkdir", "cp"].includes(cmd);
+  const slash = word.lastIndexOf("/");
+  const prefix = slash >= 0 ? word.slice(0, slash + 1) : "";
+  const stem = (slash >= 0 ? word.slice(slash + 1) : word).toLowerCase();
+  if (cmd === "theme") return T.catalog.filter((t) => t.name.toLowerCase().includes(word.toLowerCase())).slice(0, 12).map((t) => [t.name, t.family || ""]);
+  if (word.startsWith("/") && !word.slice(1).includes("/")) return S.roots.filter((r) => r.id.startsWith(word.slice(1).toLowerCase())).map((r) => ["/" + r.id + "/", r.name]);
+  if (prefix) return [];
+  return S.entries.filter((e) => (!dirsOnly || e.kind === "dir") && e.name.toLowerCase().startsWith(stem))
+    .slice(0, 14).map((e) => [e.name + (e.kind === "dir" ? "/" : ""), e.kind === "dir" ? "folder" : fmtSize(e.size)]);
+}
+function cmdHint() {
+  const v = $("#cmd-input").value;
+  const parts = splitArgs(v);
+  const name = (parts[0] || "").toLowerCase();
+  const cmd = CMD_ALIAS[name] || name;
+  const sug = $("#cmd-suggest");
+  let opts = [];
+  if (parts.length <= 1) opts = CMDS.filter(([c]) => c.startsWith(name)).map(([c, a, d]) => [c, `${a}  ${d}`]);
+  else opts = cmdCandidates(cmd, parts[parts.length - 1] || "");
+  CMD.opts = opts; CMD.on = -1;
+  const known = CMDS.find(([c]) => c === cmd);
+  const partial = parts.length <= 1 && name && CMDS.some(([c]) => c.startsWith(name));
+  $("#cmd-hint").textContent = known ? `${known[0]} ${known[1]} — ${known[2]}` : partial ? "Tab completes" : v ? "unknown command (:help lists them)" : "Tab completes · ↑↓ history · Esc closes";
+  sug.hidden = !opts.length || (parts.length <= 1 && known && v.endsWith(" "));
+  sug.replaceChildren(...opts.map(([a, b], i) => h("div", { class: "cmd-opt", dataset: { i } }, h("b", { text: a }), h("span", { text: b }))));
+}
+function cmdComplete(pick) {
+  const inp = $("#cmd-input");
+  const parts = splitArgs(inp.value);
+  const opt = CMD.opts[pick != null ? pick : 0];
+  if (!opt) return;
+  const val = opt[0];
+  const q = (x) => (/\s/.test(x) ? `"${x}"` : x);
+  if (parts.length <= 1) inp.value = val + " ";
+  else { parts[parts.length - 1] = val; inp.value = parts.slice(0, -1).map(q).join(" ") + " " + q(val) + (val.endsWith("/") ? "" : " "); }
+  if (val.endsWith("/") && parts.length > 1 && (CMD_ALIAS[parts[0]] || parts[0]) === "cd") inp.value = inp.value.trimEnd();
+  cmdHint();
+}
+const entryByName = (n) => S.entries.find((e) => e.name === n.replace(/\/$/, ""));
+async function cmdRun(line) {
+  const parts = splitArgs(line.trim()).filter((x) => x !== "");
+  if (!parts.length) return;
+  const cmd = CMD_ALIAS[parts[0].toLowerCase()] || parts[0].toLowerCase();
+  const args = parts.slice(1);
+  const live = S.route === "browse";
+  const need = (n, usage) => { if (args.length < n) throw new Error("usage: :" + cmd + " " + usage); };
+  switch (cmd) {
+    case "help": {
+      modal("⌨️ Commands", h("div", { class: "picker" }, CMDS.map(([c, a, d]) => h("div", { class: "picker-row" }, h("b", { style: { color: "var(--cyan)", minWidth: "8ch" }, text: ":" + c }), h("span", { text: a }), h("span", { class: "muted", text: "— " + d })))),
+        [h("button", { class: "btn btn-primary", type: "button", text: "Close", onclick: closeModal })]);
+      $(".modal-window").classList.add("wide"); return;
+    }
+    case "cd": {
+      const target = args[0] ? cmdPath(args[0].replace(/\/$/, "")) : S.path.split("/")[0];
+      if (!target) throw new Error("that's above the drives");
+      await api("GET", "/api/list?path=" + enc(target));
+      return S.route === "time" ? goTime(S.snap, target) : go(target);
+    }
+    case "mkdir": {
+      need(1, "<folder>"); if (!live) throw new Error("not here");
+      for (const a of args) {
+        const segs = cmdPath(a).split("/"); let base = segs[0];
+        for (const seg of segs.slice(1)) {
+          const next = base + "/" + seg;
+          if (!(await api("GET", "/api/exists?path=" + enc(next))).exists) await api("POST", "/api/mkdir", { dir: base, name: seg });
+          base = next;
+        }
+      }
+      await refresh(); toast(`📁 made ${args.join(", ")}`, "ok"); return;
+    }
+    case "touch": {
+      need(1, "<file>"); if (!live) throw new Error("not here");
+      for (const a of args) { const p = cmdPath(a); await api("POST", "/api/newfile", { dir: parentOf(p), name: baseName(p) }); }
+      await refresh(); toast(`📝 made ${args.join(", ")}`, "ok"); return;
+    }
+    case "e": {
+      need(1, "<file>");
+      const p = cmdPath(args[0]);
+      const exists = (await api("GET", "/api/exists?path=" + enc(p))).exists;
+      if (!exists) { if (!live) throw new Error("not here"); await api("POST", "/api/newfile", { dir: parentOf(p), name: baseName(p) }); await refresh(); }
+      return openEditor(p);
+    }
+    case "rm": {
+      need(1, "<name>…"); if (!live) throw new Error("not here");
+      const items = args.map((a) => { const e = entryByName(a); if (!e) throw new Error(`no ${a} here`); return e; });
+      return doTrash(items);
+    }
+    case "mv": {
+      need(2, "<name> <new name | folder>"); if (!live) throw new Error("not here");
+      const e = entryByName(args[0]); if (!e) throw new Error(`no ${args[0]} here`);
+      const dest = args[1].replace(/\/$/, "");
+      const destEntry = entryByName(dest);
+      if (args[1].endsWith("/") || args[1].startsWith("/") || args[1].includes("/") || (destEntry && destEntry.kind === "dir")) {
+        await doTransfer([entryPath(e)], cmdPath(dest), false); return;
+      }
+      return api("POST", "/api/rename", { path: entryPath(e), name: dest }).then(async (r) => { await refresh(); focusPath(r.path); toast("✏️ renamed to " + dest, "ok"); });
+    }
+    case "cp": {
+      need(2, "<name> <folder>"); if (!live) throw new Error("not here");
+      const e = entryByName(args[0]); if (!e) throw new Error(`no ${args[0]} here`);
+      await doTransfer([entryPath(e)], cmdPath(args[1].replace(/\/$/, "")), true); return;
+    }
+    case "find": need(1, "<text>"); location.hash = `#/search/${encPath(S.path.split("/")[0])}?q=${enc(args.join(" "))}`; return;
+    case "share": return shareDialog(null, { name: (args[0] || baseName(S.path)).replace(/[^A-Za-z0-9_-]+/g, "-").slice(0, 40), path: S.path });
+    case "time": return enterTime();
+    case "samba": location.hash = "#/samba"; return;
+    case "upload": if (!live) throw new Error("not here"); return openUploadPanel(S.path);
+    case "theme": {
+      need(1, "<name>");
+      const q = args.join(" ").toLowerCase();
+      const t = T.catalog.find((x) => x.name.toLowerCase() === q) || T.catalog.find((x) => x.name.toLowerCase().includes(q));
+      if (!t) throw new Error("no theme like " + q);
+      T.id = t.id; store.set("theme", t.id); await applyTheme(t.id); toast("🎨 " + t.name, "ok"); return;
+    }
+    default: throw new Error(`not a command: ${parts[0]} (try :help)`);
+  }
+}
+function wireCmd() {
+  const inp = $("#cmd-input");
+  inp.addEventListener("input", cmdHint);
+  inp.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") { ev.preventDefault(); cmdClose(); return; }
+    if (ev.key === "Tab") { ev.preventDefault(); if (CMD.opts.length) { CMD.on = (CMD.on + (ev.shiftKey ? -1 : 1) + CMD.opts.length) % CMD.opts.length; if (CMD.opts.length === 1) cmdComplete(0); else { $$("#cmd-suggest .cmd-opt").forEach((o, i) => o.classList.toggle("on", i === CMD.on)); } } return; }
+    if (ev.key === "ArrowUp" || ev.key === "ArrowDown") {
+      ev.preventDefault();
+      if (!CMD.hist.length) return;
+      CMD.at = Math.max(-1, Math.min(CMD.hist.length - 1, CMD.at + (ev.key === "ArrowUp" ? 1 : -1)));
+      inp.value = CMD.at < 0 ? "" : CMD.hist[CMD.at]; cmdHint(); return;
+    }
+    if (ev.key === "Enter" && CMD.on >= 0) { ev.preventDefault(); cmdComplete(CMD.on); return; }
+    if (ev.key === "Enter") { ev.preventDefault(); $("#cmdbar").requestSubmit(); return; }
+    if (ev.key === "Backspace" && !inp.value) { cmdClose(); }
+  });
+  $("#cmd-suggest").addEventListener("mousedown", (ev) => { const o = ev.target.closest(".cmd-opt"); if (o) { ev.preventDefault(); cmdComplete(+o.dataset.i); inp.focus(); } });
+  $("#cmdbar").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const line = inp.value.trim();
+    if (!line) { cmdClose(); return; }
+    CMD.hist = [line, ...CMD.hist.filter((x) => x !== line)].slice(0, 50); store.set("cmdhist", CMD.hist);
+    cmdClose();
+    try { await cmdRun(line); } catch (e) { fail(e); cmdOpen(line); }
+  });
+  inp.addEventListener("blur", () => setTimeout(() => { if (document.activeElement !== inp) cmdClose(); }, 150));
+}
+
 // ── keyboard ───────────────────────────────────────────────────────────
 function columns() {
   const items = $$("#view [data-i]");
@@ -1351,7 +1732,12 @@ function columns() {
   return n < 0 ? items.length : n;
 }
 function onKey(ev) {
-  if (!$("#editor").hidden && $("#modal").hidden) return; // CodeMirror owns the keyboard
+  if (!$("#editor").hidden && $("#modal").hidden) {
+    // CodeMirror owns the keyboard; the smb.conf GUI only needs save/close
+    if (!ED.inst && (ev.ctrlKey || ev.metaKey) && ev.key === "s") { ev.preventDefault(); saveEditor(); }
+    else if (!ED.inst && ev.key === "Escape") closeEditor(false);
+    return;
+  }
   const tag = (ev.target.tagName || "").toLowerCase();
   const typing = tag === "input" || tag === "textarea" || tag === "select";
   if (!$("#viewer").hidden) {
@@ -1390,6 +1776,7 @@ function onKey(ev) {
     case "F2": if (S.sel.size === 1 && S.listing && S.listing.writable) { ev.preventDefault(); doRename(selected()[0]); } return;
     case "Escape": if (!S.sel.size && S.route === "time") { go(S.path); return; } S.sel.clear(); paintSel(); return;
     case "/": ev.preventDefault(); $("#search-input").focus(); return;
+    case ":": ev.preventDefault(); cmdOpen(); return;
   }
   if (mod && ev.key === "a") { ev.preventDefault(); setSel(S.entries.map(entryPath)); return; }
   if (mod && ev.key === "c") { if (S.sel.size && S.route !== "time") { ev.preventDefault(); clipSet("copy"); } return; }
@@ -1508,6 +1895,10 @@ function wireApp() {
   });
   // editor wiring
   $("#ed-save").addEventListener("click", () => saveEditor());
+  $("#ed-gui").addEventListener("click", () => {
+    if (ED.inst && ED.custom) { const t = ED.inst.text(); ED.inst.destroy(); ED.inst = null; confGui(t); }
+    else if (ED.guiText) { const t = ED.guiText(); ED.guiText = null; confVim(t); }
+  });
   $("#ed-close").addEventListener("click", () => closeEditor(false));
   $("#ed-vim").addEventListener("click", () => {
     ED.vim = !ED.vim; store.set("vim", ED.vim);
@@ -1553,6 +1944,7 @@ function wireApp() {
   $("#viewer-info").addEventListener("click", () => { const e = V.list[V.i]; if (e) showProps(e); });
   $("#viewer-stage").addEventListener("click", (ev) => { if (ev.target.id === "viewer-stage") closeViewer(); });
   document.addEventListener("keydown", onKey);
+  wireCmd();
   window.addEventListener("scroll", closeCtx, { passive: true });
 }
 

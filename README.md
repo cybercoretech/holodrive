@@ -42,6 +42,16 @@ Cybercore. One Rust binary, no database, no Node.
   *Share via Samba…*), edit, rename, make read-only, disable, disconnect
   everyone, remove, reload or restart smbd, and roll back to any of the last
   20 `smb.conf` versions. See *Samba helper* below.
+- **smb.conf editor, two ways** (Samba page): **🧩 GUI** — every section as
+  a card, every setting as a row (toggles for yes/no, a folder picker for
+  paths, suggestions for common settings), comments and order kept, risky
+  settings flagged as you type — or **⌨️ Vim** — the whole file in the
+  editor. Switch between them without losing edits. Both save through the
+  helper with the same rails (see below).
+- **Command line** (`:`), Vim style: `:mkdir a/b/c`, `:touch notes.md`,
+  `:e file` (made if missing), `:cd ..` / `:cd /shared/x`, `:rm`, `:mv`,
+  `:cp`, `:find`, `:share`, `:time`, `:theme <name>`, `:samba`, `:upload`,
+  `:help`. Tab completes names, ↑/↓ recalls history, quotes for spaces.
 - **Time machine.** For drives covered by snapper, press ⏳ (or `t`) to see
   any folder as it was in any snapshot: a timeline of every snapshot, `[`/`]`
   to step, files deleted since marked ✗, changed ones ±. Restore items in
@@ -57,7 +67,7 @@ Cybercore. One Rust binary, no database, no Node.
   pick one, it follows the desktop's active theme live.
 - **Keyboard.** Arrows, Enter, Space (preview), Backspace (up), Delete, F2,
   Ctrl+A/C/X/V, `/` search, `g`/`l` grid/list, `u` upload, `n` new folder,
-  `e` edit, `v` versions, `t` time machine, `i` properties, `r` refresh.
+  `:` command line, `e` edit, `v` versions, `t` time machine, `i` properties, `r` refresh.
 
 ## Security model
 
@@ -126,14 +136,22 @@ it's given:
   itself, with no hidden component, not world-writable, and not under
   anything in `/etc/holodrive/samba-deny.list` (Vault, Personal, MEGA… —
   root-owned, edit with sudo);
+- whole-file saves (GUI and Vim) also pass **safety rails**: nothing that
+  runs programs or reads other files (`*command*`, `*script*`, `*exec*`,
+  `include`, `config file`, `magic script`, `printcap name` other than
+  `/dev/null`…), no `force user`/`force group`/`admin users`/`username map`,
+  no guest access (`map to guest` must be `never`), no `wide links`, no
+  `[homes]`/`[printers]`, log/lock/state paths only under Samba's own
+  directories, no line continuations; weaker settings (encryption not
+  required, pre-SMB3 clients, no `hosts allow`) need a confirmation; and a
+  save is refused if the file changed since the editor opened it;
 - every new smb.conf passes `testparm` before it replaces the old one, which
   is backed up to `/var/lib/holodrive/smb-backups` (last 20 kept);
 - every change is logged: `journalctl -t holodrive-sambactl`.
 
 ## Roadmap
 
-- smb.conf editor (form and Vim) with safety rails; a Vim-style `:` command
-  bar in the browser.
+- (open) ideas welcome.
 
 The editor bundle (`static/editor.js.gz`) is built from `editor/` with
 `editor/build.sh`; CodeMirror and its packages are MIT.

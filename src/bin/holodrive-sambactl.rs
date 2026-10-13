@@ -15,8 +15,14 @@
 //!   old one, which is backed up to /var/lib/holodrive/smb-backups first;
 //! - every change is logged to the journal (`logger -t holodrive-sambactl`).
 //!
-//! Usage: status | upsert (JSON on stdin) | remove <share> | reload |
-//!        restart | close-share <share> | backups | restore <backup>
+//! - `write` replaces the whole file (the editor's GUI and Vim modes) but
+//!   only after `smbconf::check_rails` (no settings that run programs, read
+//!   other files, force users or allow guests) and the path check for every
+//!   share, and only if the file is still the one the editor opened.
+//!
+//! Usage: status | read | upsert (JSON on stdin) | write <sha> (text on
+//!        stdin) | remove <share> | reload | restart | close-share <share> |
+//!        backups | restore <backup>
 //! Prints one JSON line: {"ok": bool, "message": "...", "data": ...}.
 
 #[path = "../smbconf.rs"]
@@ -64,6 +70,14 @@ fn run() -> Out {
     match args.first().map(String::as_str).unwrap_or("") {
         "status" => status(),
         "upsert" => locked(|| upsert(&caller)),
+        "read" => {
+            let text = std::fs::read_to_string(SMB_CONF).map_err(|e| format!("{SMB_CONF}: {e}"))?;
+            Ok(("smb.conf".into(), json!({ "text": text, "hash": smbconf::content_hash(&text) })))
+        }
+        "write" => {
+            let base = arg(1)?;
+            locked(|| write(&caller, &base))
+        }
         "remove" => {
             let name = arg(1)?;
             locked(|| change(&caller, &format!("removed share [{name}]"), |t| smbconf::remove(t, &name)))
@@ -306,6 +320,32 @@ fn change(c: &Caller, what: &str, f: impl FnOnce(&str) -> Result<String, String>
         Err(_) => format!("{what} (saved; smbd isn't running, so nothing to reload)"),
     };
     Ok((msg, json!({ "backup": backup })))
+}
+
+fn write(c: &Caller, base: &str) -> Out {
+    let mut next = String::new();
+    std::io::stdin()
+        .take(300 * 1024)
+        .read_to_string(&mut next)
+        .map_err(|e| e.to_string())?;
+    if !next.ends_with('\n') {
+        next.push('\n');
+    }
+    let current = std::fs::read_to_string(SMB_CONF).map_err(|e| format!("{SMB_CONF}: {e}"))?;
+    if smbconf::content_hash(&current) != base {
+        return Err("smb.conf changed since you opened it (reload the editor)".into());
+    }
+    let warnings = smbconf::check_rails(&next).map_err(|e| e.join("; "))?;
+    for (sec, path) in smbconf::share_paths(&next) {
+        check_path(c, &path).map_err(|e| format!("[{sec}]: {e}"))?;
+    }
+    let (msg, data) = change(c, "edited smb.conf", |_| Ok(next.clone()))?;
+    let mut data = if data.is_null() { json!({}) } else { data };
+    data["warnings"] = json!(warnings);
+    data["hash"] = json!(smbconf::content_hash(
+        &std::fs::read_to_string(SMB_CONF).unwrap_or_default()
+    ));
+    Ok((msg, data))
 }
 
 fn backup(text: &str) -> Result<String, String> {

@@ -283,6 +283,192 @@ pub fn remove(text: &str, name: &str) -> Result<String, String> {
     Ok(out.join("\n") + "\n")
 }
 
+/// Parameter-name fragments that run programs, read other files or
+/// change where Samba gets its config. Matched against the normalized key.
+const FORBIDDEN_FRAGMENTS: &[&str] = &[
+    "command",
+    "script",
+    "exec",
+    "program",
+    "include",
+    "config file",
+    "config backend",
+    "magic",
+    "panic action",
+    "dfree",
+    "quota",
+    "message command",
+    "passdb backend",
+    "smb passwd file",
+    "username map",
+    "registry shares",
+    "usershare path",
+];
+/// Whole parameter names refused (access escalation or guest access).
+const FORBIDDEN_KEYS: &[&str] = &[
+    "force user",
+    "force group",
+    "admin users",
+    "guest ok",
+    "public",
+    "guest only",
+    "guest account",
+    "root directory",
+    "root dir",
+    "root",
+    "allow insecure wide links",
+];
+/// Path parameters that must stay under Samba's own directories.
+const PATH_KEYS: &[(&str, &[&str])] = &[
+    ("log file", &["/var/log/samba/"]),
+    (
+        "lock directory",
+        &["/var/lib/samba", "/run/samba", "/var/cache/samba"],
+    ),
+    ("state directory", &["/var/lib/samba"]),
+    ("cache directory", &["/var/cache/samba", "/var/lib/samba"]),
+    ("pid directory", &["/run/samba", "/run"]),
+    ("private dir", &["/var/lib/samba/private"]),
+    ("private directory", &["/var/lib/samba/private"]),
+    ("ncalrpc dir", &["/run/samba", "/var/lib/samba"]),
+    ("binddns dir", &["/var/lib/samba"]),
+];
+
+/// Every (section, key, value, 1-based line) in the file.
+pub fn entries(text: &str) -> Vec<(String, String, String, usize)> {
+    let mut section = String::new();
+    let mut out = vec![];
+    for (i, l) in text.lines().enumerate() {
+        if let Some(n) = header_name(l) {
+            section = n;
+        } else if let Some((k, v)) = entry(l) {
+            out.push((section.clone(), k, v, i + 1));
+        }
+    }
+    out
+}
+
+/// The safety rails for a whole smb.conf written from the web. Returns the
+/// warnings (allowed, but worth a confirm) or the errors (refused).
+pub fn check_rails(text: &str) -> Result<Vec<String>, Vec<String>> {
+    let mut errors = vec![];
+    let mut warnings = vec![];
+    if text.len() > 256 * 1024 {
+        return Err(vec!["smb.conf is limited to 256 KiB here".into()]);
+    }
+    for (i, l) in text.lines().enumerate() {
+        let t = l.trim_end();
+        if t.ends_with('\\') && !t.trim_start().starts_with('#') && !t.trim_start().starts_with(';')
+        {
+            errors.push(format!(
+                "line {}: line continuations (trailing \\) aren't allowed here",
+                i + 1
+            ));
+        }
+        if l.contains('\0') {
+            errors.push(format!("line {}: NUL byte", i + 1));
+        }
+        let tt = l.trim();
+        if tt.starts_with('[') && !tt.ends_with(']') {
+            errors.push(format!("line {}: unclosed section header", i + 1));
+        }
+    }
+    let mut seen_global = false;
+    for name in text.lines().filter_map(header_name) {
+        let low = name.to_lowercase();
+        if low == "global" {
+            seen_global = true;
+        } else if low == "homes" || low == "printers" || low == "print$" {
+            errors.push(format!("[{name}] sections aren't allowed here"));
+        } else if let Err(e) = valid_share_name(&name) {
+            errors.push(format!("[{name}]: {e}"));
+        }
+    }
+    if !seen_global {
+        errors.push("the [global] section is missing".into());
+    }
+    let mut encrypt = None;
+    let mut min_proto = None;
+    let mut hosts_allow = false;
+    for (sec, k, v, line) in entries(text) {
+        let where_ = format!("line {line} [{sec}] {k}");
+        if FORBIDDEN_KEYS.contains(&k.as_str()) || FORBIDDEN_FRAGMENTS.iter().any(|f| k.contains(f))
+        {
+            errors.push(format!("{where_}: not allowed from Holodrive (it could run programs, read other files or widen access)"));
+            continue;
+        }
+        let lv = v.to_lowercase();
+        match k.as_str() {
+            "map to guest" if lv != "never" => {
+                errors.push(format!("{where_}: only \"never\" is allowed"))
+            }
+            "printcap name" | "printcap" if v != "/dev/null" => {
+                errors.push(format!("{where_}: only /dev/null is allowed"))
+            }
+            "wide links" if parse_bool(&v) == Some(true) => errors.push(format!(
+                "{where_}: following links outside shares isn't allowed"
+            )),
+            "path" if sec.eq_ignore_ascii_case("global") => {
+                errors.push(format!("{where_}: path belongs in a share"))
+            }
+            _ => {}
+        }
+        if let Some((_, allowed)) = PATH_KEYS.iter().find(|(pk, _)| *pk == k) {
+            let clean = !v.contains("..");
+            if !clean || !allowed.iter().any(|a| v.starts_with(a)) {
+                errors.push(format!(
+                    "{where_}: must stay under {}",
+                    allowed.join(" or ")
+                ));
+            }
+        }
+        if sec.eq_ignore_ascii_case("global") {
+            match k.as_str() {
+                "server smb encrypt" | "smb encrypt" => encrypt = Some(lv.clone()),
+                "server min protocol" | "min protocol" => min_proto = Some(v.to_uppercase()),
+                "hosts allow" | "allow hosts" => hosts_allow = true,
+                _ => {}
+            }
+        }
+    }
+    if !matches!(encrypt.as_deref(), Some("required" | "mandatory" | "force")) {
+        warnings.push("encryption isn't required ([global] server smb encrypt = required)".into());
+    }
+    if !min_proto.as_deref().is_some_and(|p| p.starts_with("SMB3")) {
+        warnings.push("clients older than SMB3 are allowed ([global] server min protocol)".into());
+    }
+    if !hosts_allow {
+        warnings.push(
+            "no [global] hosts allow: any address that reaches port 445 may try to log in".into(),
+        );
+    }
+    if errors.is_empty() {
+        Ok(warnings)
+    } else {
+        Err(errors)
+    }
+}
+
+/// A short content hash (FNV-1a 64): the editor sends back the one it
+/// opened, so a stale tab can't overwrite newer changes.
+pub fn content_hash(text: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in text.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}")
+}
+
+/// (section, path) for every share that sets one.
+pub fn share_paths(text: &str) -> Vec<(String, String)> {
+    entries(text)
+        .into_iter()
+        .filter(|(sec, k, _, _)| k == "path" && !sec.eq_ignore_ascii_case("global"))
+        .map(|(sec, _, v, _)| (sec, v))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -387,5 +573,69 @@ mod tests {
             out2.trim_end().ends_with("veto files = /.DS_Store/"),
             "its comment goes with it"
         );
+    }
+
+    const SAFE: &str = "[global]
+   server smb encrypt = required
+   server min protocol = SMB3_11
+   hosts allow = 192.168.88.0/24
+   map to guest = never
+   log file = /var/log/samba/%m.log
+   printcap name = /dev/null
+
+[Music]
+   path = /home/raven/Music
+";
+
+    #[test]
+    fn rails_accept_a_safe_file() {
+        assert_eq!(check_rails(SAFE), Ok(vec![]));
+        assert_eq!(
+            share_paths(SAFE),
+            vec![("Music".to_string(), "/home/raven/Music".to_string())]
+        );
+    }
+
+    #[test]
+    fn rails_refuse_dangerous_settings() {
+        for bad in [
+            "   root preexec = /bin/sh -c id",
+            "   preexec = touch /tmp/x",
+            "   ROOT   PREEXEC = x",
+            "   include = /etc/shadow",
+            "   force user = root",
+            "   admin users = raven",
+            "   guest ok = yes",
+            "   public = yes",
+            "   username map = /tmp/map",
+            "   wide links = yes",
+            "   print command = sh",
+            "   printcap name = /etc/shadow",
+            "   add share command = sh",
+            "   log file = /etc/cron.d/x",
+            "   log file = /var/log/samba/../../etc/x",
+            "   map to guest = bad user",
+            "   config file = /tmp/evil.conf",
+            "   magic script = run.sh",
+            "   path = \\\n/etc",
+        ] {
+            let t = format!("{SAFE}{bad}\n");
+            assert!(check_rails(&t).is_err(), "should refuse: {bad}");
+        }
+        assert!(check_rails(&format!("{SAFE}[homes]\n   read only = no\n")).is_err());
+        assert!(
+            check_rails("[Music]\n   path = /x\n").is_err(),
+            "no [global]"
+        );
+        assert!(check_rails(&format!("{SAFE}[bad name]\n")).is_err());
+    }
+
+    #[test]
+    fn rails_warn_on_weaker_global() {
+        let weak = SAFE
+            .replace("required", "desired")
+            .replace("SMB3_11", "SMB2");
+        let w = check_rails(&weak).unwrap();
+        assert_eq!(w.len(), 2, "{w:?}");
     }
 }

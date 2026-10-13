@@ -196,6 +196,7 @@
       <span class="titlebar-text ed-title" id="ed-title"></span>
       <span class="ed-dirty" id="ed-dirty" title="unsaved changes" hidden>●</span>
       <span class="ed-ro chip" id="ed-ro" hidden>read-only</span>
+      <button type="button" class="chip" id="ed-gui" title="Switch between the GUI and Vim" hidden>🧩 GUI</button>
       <button type="button" class="chip" id="ed-vim" title="Vim keys on/off">vim</button>
       <button type="button" class="btn btn-primary" id="ed-save" title="Save (Ctrl+S or :w)">💾 Save</button>
       <button type="button" class="win-close" id="ed-close" title="Close (:q)">✕</button>
@@ -210,6 +211,12 @@
     </div>
   </div>
 </div>
+
+<!-- vim-style command line -->
+<form id="cmdbar" class="cmdbar" hidden autocomplete="off">
+  <div class="cmd-suggest" id="cmd-suggest" hidden></div>
+  <div class="cmd-line"><span class="cmd-colon">:</span><input id="cmd-input" spellcheck="false" aria-label="command"><span class="cmd-hint" id="cmd-hint"></span></div>
+</form>
 
 <div id="ctx" class="ctx" hidden role="menu"></div>
 <div id="toasts" class="toasts" aria-live="polite"></div>
