@@ -53,6 +53,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/roots", get(roots))
         .route("/api/list", get(list))
         .route("/api/stat", get(stat))
+        .route("/api/exists", get(exists))
         .route("/api/search", get(search))
         .route("/api/text", get(text_get).post(text_put))
         .route("/api/raw", get(raw))
@@ -77,6 +78,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/samba/remove", post(samba_remove))
         .route("/api/samba/action", post(samba_action))
         .route("/api/samba/backups", get(samba_backups))
+        .route("/api/samba/conf", get(samba_conf).post(samba_conf_write))
         .route("/api/samba/restore", post(samba_restore))
         .route(
             "/api/upload",
@@ -354,6 +356,16 @@ async fn list(State(s): State<Shared>, Query(q): Query<PathQ>) -> Response {
 async fn stat(State(s): State<Shared>, Query(q): Query<PathQ>) -> Response {
     let cfg = s.cfg.clone();
     reply!(blocking(move || fsops::stat(&cfg, &q.path)))
+}
+
+/// Quiet existence probe for the command line (no 404s in the console).
+async fn exists(State(s): State<Shared>, Query(q): Query<PathQ>) -> Response {
+    let cfg = s.cfg.clone();
+    reply!(blocking(move || {
+        let r = fsops::resolve(&cfg, &q.path)?;
+        let m = std::fs::metadata(&r.abs).ok();
+        Ok(json!({ "exists": m.is_some(), "dir": m.as_ref().is_some_and(|m| m.is_dir()) }))
+    }))
 }
 
 async fn search(State(s): State<Shared>, Query(q): Query<SearchQ>) -> Response {
@@ -943,4 +955,76 @@ async fn snap_restore(State(s): State<Shared>, Json(b): Json<RestoreBody>) -> Re
     reply!(blocking(move || snapshots::restore(
         &cfg, &b.path, &b.snap, b.replace, &b.label
     )))
+}
+
+async fn samba_conf(State(_s): State<Shared>) -> Response {
+    reply!(blocking(move || {
+        let text = std::fs::read_to_string("/etc/samba/smb.conf")
+            .map_err(|e| FsError(503, format!("/etc/samba/smb.conf: {e}")))?;
+        let rails = smbconf::check_rails(&text);
+        Ok(json!({
+            "text": text,
+            "hash": smbconf::content_hash(&text),
+            "helper": samba::helper_installed(),
+            "warnings": rails.as_ref().ok(),
+            "errors": rails.as_ref().err(),
+        }))
+    }))
+}
+
+#[derive(Deserialize)]
+struct ConfBody {
+    text: String,
+    hash: String,
+    #[serde(default)]
+    accept_warnings: bool,
+}
+
+/// Save the whole file. Errors from the rails come back as a list (400);
+/// warnings need `accept_warnings` (428) so the page can ask first.
+async fn samba_conf_write(State(_s): State<Shared>, Json(b): Json<ConfBody>) -> Response {
+    let checked = tokio::task::spawn_blocking(move || {
+        let home = dirs::home_dir().unwrap_or_default();
+        let outside: Vec<String> = smbconf::share_paths(&b.text)
+            .into_iter()
+            .filter(|(_, p)| {
+                !std::path::Path::new(p).starts_with(&home) || !std::path::Path::new(p).is_dir()
+            })
+            .map(|(sec, p)| {
+                format!(
+                    "[{sec}] path {p}: must be an existing folder inside {}",
+                    home.display()
+                )
+            })
+            .collect();
+        if !outside.is_empty() {
+            return Err((
+                400,
+                json!({ "error": "refused by Holodrive's safety rails", "errors": outside }),
+            ));
+        }
+        match smbconf::check_rails(&b.text) {
+            Err(errors) => Err((
+                400,
+                json!({ "error": "refused by Holodrive's safety rails", "errors": errors }),
+            )),
+            Ok(w) if !w.is_empty() && !b.accept_warnings => {
+                Err((428, json!({ "error": "please confirm", "warnings": w })))
+            }
+            Ok(_) => match samba::helper(&["write", &b.hash], Some(b.text)) {
+                Ok((message, data)) => Ok(json!({ "message": message, "data": data })),
+                Err(e) => Err((422, json!({ "error": e }))),
+            },
+        }
+    })
+    .await;
+    match checked {
+        Ok(Ok(v)) => Json(v).into_response(),
+        Ok(Err((code, v))) => (
+            StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_REQUEST),
+            Json(v),
+        )
+            .into_response(),
+        Err(e) => err(500, e),
+    }
 }

@@ -537,3 +537,54 @@ body.time-travel .view .tile, body.time-travel .view .row:not(.head) { filter: s
 .ver-when { font-weight: 700; } .ver-meta { color: var(--muted); font-size: 11.5px; }
 .ver-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .ver-actions .btn { padding: 5px 8px; font-size: 10.5px; }
+
+/* ── smb.conf GUI ──────────────────────────────────────────────────── */
+.smb-gui { height: 100%; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.smb-gui > * { flex-shrink: 0; }
+.gui-top { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.sec-card { border: 1px solid var(--line); border-radius: 12px; background: var(--glass); overflow: hidden; }
+.sec-card.global { border-color: color-mix(in srgb, var(--purple) 55%, var(--line)); }
+.sec-card > summary { display: flex; align-items: center; gap: 6px; padding: 9px 12px; cursor: pointer; list-style: none;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--cyan) 10%, transparent), transparent); border-bottom: 1px solid var(--line); }
+.sec-card.global > summary { background: linear-gradient(90deg, color-mix(in srgb, var(--purple) 16%, transparent), transparent); }
+.sec-card > summary::-webkit-details-marker { display: none; }
+.sec-icon { font-size: 17px; }
+.sec-bracket { color: var(--pink); font-weight: 700; }
+.sec-name { background: none; border: 1px solid transparent; border-radius: 6px; padding: 2px 6px; font-weight: 700; font-size: 14px; width: 14ch; color: var(--fg); }
+.sec-name:hover:not(:disabled), .sec-name:focus { border-color: var(--line); outline: none; }
+.sec-path { color: var(--cyan); font-size: 12px; margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kv-rows { display: grid; gap: 4px; padding: 10px 12px 4px; }
+.kv-row { display: grid; grid-template-columns: minmax(140px, 220px) auto minmax(0, 1fr) auto auto auto auto; gap: 8px; align-items: center; }
+.kv-row.comment { grid-template-columns: 1fr auto; }
+.kv-key, .kv-val, .kv-comment { padding: 6px 9px; border-radius: 7px; border: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 70%, transparent); outline: none; }
+.kv-key { color: var(--cyan); } .kv-val { color: var(--fg); }
+.kv-key:focus, .kv-val:focus, .kv-comment:focus { border-color: var(--pink); }
+.kv-comment { color: var(--muted); font-style: italic; }
+.kv-eq { color: var(--pink); }
+.kv-row.bad .kv-key, .kv-row.bad .kv-val { border-color: var(--red); box-shadow: 0 0 10px color-mix(in srgb, var(--red) 30%, transparent); }
+.kv-prob { color: var(--red); font-size: 11px; white-space: nowrap; }
+.kv-prob:empty { display: none; }
+.kv-x { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 4px 6px; border-radius: 6px; }
+.kv-x:hover { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
+.kv-add { margin: 4px 12px 12px; padding: 5px 10px; font-size: 10.5px; }
+.kv-pick { padding: 4px 8px; }
+.kv-del { padding: 4px 9px; font-size: 10.5px; }
+@media (max-width: 860px) {
+  .kv-row { grid-template-columns: 1fr auto; }
+  .kv-row .kv-eq { display: none; }
+  .kv-row .kv-val { grid-column: 1 / -1; }
+}
+
+/* ── : command line ────────────────────────────────────────────────── */
+.cmdbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 75; padding: 0 14px 12px; pointer-events: none; }
+.cmd-line, .cmd-suggest { pointer-events: auto; max-width: 900px; margin: 0 auto; }
+.cmd-line { display: flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 12px; border: 1px solid var(--pink);
+  background: var(--glass-strong); backdrop-filter: blur(14px); box-shadow: 0 0 30px var(--glow-pink), 0 18px 40px rgba(0,0,0,.5); }
+.cmd-colon { color: var(--pink); font-weight: 700; font-size: 16px; text-shadow: 0 0 10px var(--pink); }
+#cmd-input { flex: 1; background: none; border: 0; outline: none; font-size: 14px; color: var(--fg); caret-color: var(--cyan); }
+.cmd-hint { color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
+.cmd-suggest { margin-bottom: 6px; padding: 6px; border-radius: 10px; border: 1px solid var(--line); background: var(--glass-strong); backdrop-filter: blur(14px); display: grid; gap: 2px; max-height: 40vh; overflow: auto; }
+.cmd-opt { display: flex; gap: 10px; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 12.5px; }
+.cmd-opt b { color: var(--cyan); min-width: 12ch; }
+.cmd-opt span { color: var(--muted); }
+.cmd-opt.on, .cmd-opt:hover { background: color-mix(in srgb, var(--pink) 18%, transparent); }
