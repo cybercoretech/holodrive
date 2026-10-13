@@ -1,0 +1,31 @@
+[package]
+name = "holodrive"
+version = "0.1.0"
+edition = "2024"
+description = "Holodrive — a neon web file manager for your own machine, over your tailnet (Cybercore Tech)"
+license = "MIT"
+repository = "https://github.com/cybercore-tech/holodrive"
+
+[dependencies]
+anyhow = "1.0"
+argon2 = { version = "0.5", features = ["std"] }
+axum = "0.7"
+cybercore = "0.8"
+dirs = "6"
+futures-util = "0.3"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
+libc = "0.2"
+mime_guess = "2"
+rpassword = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io-util", "time", "sync", "net", "signal", "fs"] }
+toml = "0.8"
+tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.5", features = ["fs"] }
+walkdir = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[profile.release]
+strip = true
+lto = "thin"
