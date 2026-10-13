@@ -8,6 +8,8 @@ mod config;
 mod cybergrid;
 mod fsops;
 mod media;
+mod samba;
+mod smbconf;
 mod views;
 mod web;
 

@@ -14,7 +14,7 @@
 use crate::auth::{self, Auth, LoginBrake};
 use crate::config::Config;
 use crate::fsops::{self, FsError};
-use crate::{cybergrid, media, views};
+use crate::{cybergrid, media, samba, smbconf, views};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
@@ -65,6 +65,12 @@ pub fn router(state: Shared) -> Router {
         .route("/api/trash", get(trash_list).post(trash))
         .route("/api/trash/restore", post(restore))
         .route("/api/trash/purge", post(purge))
+        .route("/api/samba", get(samba_overview))
+        .route("/api/samba/share", post(samba_share))
+        .route("/api/samba/remove", post(samba_remove))
+        .route("/api/samba/action", post(samba_action))
+        .route("/api/samba/backups", get(samba_backups))
+        .route("/api/samba/restore", post(samba_restore))
         .route(
             "/api/upload",
             post(upload).layer(DefaultBodyLimit::disable()),
@@ -727,4 +733,111 @@ mod tests {
         assert_eq!(super::unpct("%zz"), "%zz");
         assert_eq!(super::pct("a b/ü"), "a%20b%2F%C3%BC");
     }
+}
+
+// ── Samba panel ────────────────────────────────────────────────────────
+
+async fn samba_overview(State(s): State<Shared>) -> Response {
+    let cfg = s.cfg.clone();
+    reply!(blocking(move || Ok(samba::overview(&cfg))))
+}
+
+fn helper_reply(r: Result<(String, Value), String>) -> Result<Value, FsError> {
+    r.map(|(message, data)| json!({ "message": message, "data": data }))
+        .map_err(|e| FsError(422, e))
+}
+
+#[derive(Deserialize)]
+struct ShareBody {
+    name: String,
+    #[serde(default)]
+    original: Option<String>,
+    /// A Holodrive path (`shared/x`) or an absolute path.
+    path: String,
+    #[serde(default)]
+    comment: String,
+    #[serde(default)]
+    read_only: bool,
+    #[serde(default = "yes")]
+    browseable: bool,
+    #[serde(default = "yes")]
+    available: bool,
+}
+fn yes() -> bool {
+    true
+}
+
+async fn samba_share(State(s): State<Shared>, Json(b): Json<ShareBody>) -> Response {
+    let cfg = s.cfg.clone();
+    reply!(blocking(move || {
+        let path = if b.path.starts_with('/') {
+            b.path.clone()
+        } else {
+            fsops::resolve(&cfg, &b.path)?
+                .abs
+                .to_string_lossy()
+                .into_owned()
+        };
+        let edit = smbconf::Edit {
+            name: b.name.trim().to_string(),
+            path: path.clone(),
+            comment: b.comment.trim().to_string(),
+            read_only: b.read_only,
+            browseable: b.browseable,
+            available: b.available,
+        };
+        // Dry run against the current file for a quick, friendly error.
+        let current = std::fs::read_to_string("/etc/samba/smb.conf").unwrap_or_default();
+        smbconf::upsert(&current, &edit, b.original.as_deref()).map_err(|e| FsError(400, e))?;
+        let body = json!({
+            "name": edit.name, "original": b.original, "path": path, "comment": edit.comment,
+            "read_only": edit.read_only, "browseable": edit.browseable, "available": edit.available,
+        });
+        helper_reply(samba::helper(&["upsert"], Some(body.to_string())))
+    }))
+}
+
+#[derive(Deserialize)]
+struct NameBody {
+    name: String,
+}
+
+async fn samba_remove(State(_s): State<Shared>, Json(b): Json<NameBody>) -> Response {
+    reply!(blocking(move || {
+        let current = std::fs::read_to_string("/etc/samba/smb.conf").unwrap_or_default();
+        smbconf::remove(&current, &b.name).map_err(|e| FsError(400, e))?;
+        helper_reply(samba::helper(&["remove", &b.name], None))
+    }))
+}
+
+#[derive(Deserialize)]
+struct ActionBody {
+    action: String,
+    #[serde(default)]
+    name: String,
+}
+
+async fn samba_action(State(_s): State<Shared>, Json(b): Json<ActionBody>) -> Response {
+    reply!(blocking(move || match b.action.as_str() {
+        "reload" | "restart" => helper_reply(samba::helper(&[&b.action], None)),
+        "close-share" => {
+            smbconf::valid_share_name(&b.name).map_err(|e| FsError(400, e))?;
+            helper_reply(samba::helper(&["close-share", &b.name], None))
+        }
+        _ => Err(FsError(400, "unknown action".into())),
+    }))
+}
+
+async fn samba_backups(State(_s): State<Shared>) -> Response {
+    reply!(blocking(move || helper_reply(samba::helper(
+        &["backups"],
+        None
+    ))))
+}
+
+async fn samba_restore(State(_s): State<Shared>, Json(b): Json<NameBody>) -> Response {
+    reply!(blocking(move || helper_reply(samba::helper(
+        &["restore", &b.name],
+        None
+    ))))
 }

@@ -1,0 +1,13 @@
+# Folders Holodrive's Samba panel will never share (nor any folder that
+# contains one of them). One path per line; $HOME is the Holodrive user's
+# home. Hidden folders (.ssh, .gnupg, .config…) are always refused.
+# Root-owned: edit with sudo.
+$HOME/Vault
+$HOME/Vaults
+$HOME/Personal
+$HOME/PrivateVoice
+$HOME/Recovery
+$HOME/Backups
+$HOME/Databases
+$HOME/Containers
+$HOME/MEGA
