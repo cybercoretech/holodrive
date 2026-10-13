@@ -1006,7 +1006,7 @@ function wireApp() {
       h("stop", { offset: "0", "stop-color": "#fff", "stop-opacity": ".38" }), h("stop", { offset: "1", "stop-color": "#fff", "stop-opacity": "0" })))));
 
   const view = $("#view");
-  let lastTap = 0, pressTimer = null, pressed = false;
+  let pressTimer = null, pressed = false;
   view.addEventListener("click", (ev) => {
     const item = ev.target.closest("[data-i]");
     if (ev.target.closest(".row.head")) {
@@ -1018,14 +1018,13 @@ function wireApp() {
     if (pressed) { pressed = false; return; }
     const i = +item.dataset.i;
     if (ev.target.closest("[data-check]")) { clickItem(i, { toggle: true }); return; }
-    if (isTouch) {
-      if (S.sel.size) clickItem(i, { toggle: true }); else openEntry(S.entries[i]);
-      return;
-    }
-    clickItem(i, ev);
-    const now = Date.now();
-    if (now - lastTap < 350 && !ev.shiftKey && !ev.ctrlKey && !ev.metaKey) openEntry(S.entries[i]);
-    lastTap = now;
+    // Click opens (folders navigate, files preview). Selecting is the
+    // checkbox, Ctrl/Shift+click, keyboard, or long-press on touch; once
+    // something is selected, plain clicks/taps keep toggling.
+    if (ev.shiftKey || ev.ctrlKey || ev.metaKey) { clickItem(i, ev); return; }
+    if (S.sel.size && (isTouch || ev.target.closest(".selecting"))) { clickItem(i, { toggle: true }); return; }
+    S.focus = i; S.anchor = i;
+    openEntry(S.entries[i]);
   });
   view.addEventListener("contextmenu", (ev) => {
     ev.preventDefault();
