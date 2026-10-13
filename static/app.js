@@ -1141,7 +1141,7 @@ async function setupTheme() {
   list.replaceChildren(...[...groups].flatMap(([fam, themes]) => [
     h("div", { class: "theme-group", text: fam }),
     ...themes.map((t) => h("div", { class: "theme-item", tabindex: "0", role: "option", dataset: { id: t.id, name: t.name.toLowerCase(), fam: fam.toLowerCase() } },
-      h("span", { class: "swatch" }, ["bg", "hot_pink", "cyan", "purple", "acid_green"].map((k) => h("i", { style: { background: t.palette[k] } }))),
+      h("span", { class: "swatch" }, ["bg", "hot_pink", "cyan", "purple", "acid_green"].map((k) => h("i", { style: { background: "#" + String(t.palette[k] || "").replace(/^#/, "") } }))),
       h("span", { text: t.name }))),
   ]));
   list.addEventListener("click", (ev) => { const it = ev.target.closest(".theme-item"); if (it) { T.id = it.dataset.id; store.set("theme", T.id); applyTheme(T.id); } });

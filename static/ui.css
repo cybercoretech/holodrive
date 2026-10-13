@@ -4,14 +4,14 @@
    picker repaints everything. Same family as DaemonHall / Cyberdeck:
    uppercase chrome, titlebar dots, scanlines, glow. */
 
-:root {
+:where(:root) {
   --bg: #07070d; --fg: #e6e6f0; --acid: #b6ff00; --pink: #ff2bd6; --purple: #9b5cff;
   --cyan: #00f0ff; --orange: #ff9f1c; --red: #ff3860; --panel: #0f0f1a; --line: #262640; --muted: #8888a8;
   --glass: color-mix(in srgb, var(--panel) 78%, transparent);
   --glass-strong: color-mix(in srgb, var(--panel) 92%, transparent);
   --glow-pink: color-mix(in srgb, var(--pink) 55%, transparent);
   --glow-cyan: color-mix(in srgb, var(--cyan) 50%, transparent);
-  --radius: 12px;
+  --hd-radius: 12px;
   --tile: 132px;
 }
 
@@ -90,7 +90,7 @@ body:not(.booting) .boot { opacity: 0; visibility: hidden; }
 @keyframes spin { 0% { transform: rotateY(0) } 100% { transform: rotateY(360deg) } }
 
 /* ── windows (shared with the DaemonHall family) ──────────────────── */
-.window { background: var(--glass-strong); border: 1px solid var(--line); border-radius: var(--radius);
+.window { background: var(--glass-strong); border: 1px solid var(--line); border-radius: var(--hd-radius);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--purple) 20%, transparent), 0 24px 70px rgba(0,0,0,.55), 0 0 40px color-mix(in srgb, var(--pink) 10%, transparent);
   backdrop-filter: blur(14px); overflow: hidden; }
 .titlebar { display: flex; align-items: center; gap: 7px; padding: 9px 12px; border-bottom: 1px solid var(--line);
@@ -173,7 +173,7 @@ body:not(.booting) .boot { opacity: 0; visibility: hidden; }
 
 .dropdown-wrap { position: relative; }
 .dropdown { position: absolute; right: 0; top: calc(100% + 6px); z-index: 40; min-width: 250px; max-height: 70vh; overflow: auto;
-  background: var(--glass-strong); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px; backdrop-filter: blur(14px);
+  background: var(--glass-strong); border: 1px solid var(--line); border-radius: var(--hd-radius); padding: 8px; backdrop-filter: blur(14px);
   box-shadow: 0 18px 50px rgba(0,0,0,.5), 0 0 26px color-mix(in srgb, var(--purple) 18%, transparent); }
 .theme-modes { display: flex; gap: 6px; margin-bottom: 8px; }
 .theme-filter { width: 100%; margin-bottom: 6px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); outline: none; }
@@ -215,7 +215,7 @@ body:not(.booting) .boot { opacity: 0; visibility: hidden; }
 .crumb-sep { color: var(--purple); opacity: .8; }
 .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
-.selbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border-radius: var(--radius);
+.selbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border-radius: var(--hd-radius);
   background: linear-gradient(90deg, color-mix(in srgb, var(--pink) 18%, var(--panel)), color-mix(in srgb, var(--purple) 12%, var(--panel)));
   border: 1px solid color-mix(in srgb, var(--pink) 45%, var(--line)); box-shadow: 0 0 22px color-mix(in srgb, var(--pink) 18%, transparent);
   position: sticky; top: 62px; z-index: 20; }
@@ -261,7 +261,7 @@ body:not(.booting) .boot { opacity: 0; visibility: hidden; }
 @keyframes holo { 0% { filter: drop-shadow(0 0 10px var(--glow-cyan)) hue-rotate(0); } 100% { filter: drop-shadow(0 0 10px var(--glow-pink)) hue-rotate(360deg); } }
 
 /* list view */
-.list { display: grid; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: color-mix(in srgb, var(--panel) 55%, transparent); }
+.list { display: grid; border: 1px solid var(--line); border-radius: var(--hd-radius); overflow: hidden; background: color-mix(in srgb, var(--panel) 55%, transparent); }
 .row { display: grid; grid-template-columns: 30px 34px minmax(0, 1fr) 110px 150px; align-items: center; gap: 10px; padding: 7px 12px;
   border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); cursor: pointer; user-select: none; }
 .row:last-child { border-bottom: 0; }
@@ -279,7 +279,7 @@ body:not(.booting) .boot { opacity: 0; visibility: hidden; }
 .row-size, .row-date { color: var(--muted); font-size: 12px; text-align: right; white-space: nowrap; }
 .row .tile-check { position: static; opacity: 1; }
 
-.empty { display: grid; place-items: center; gap: 10px; padding: 70px 20px; color: var(--muted); text-align: center; border: 1px dashed var(--line); border-radius: var(--radius); }
+.empty { display: grid; place-items: center; gap: 10px; padding: 70px 20px; color: var(--muted); text-align: center; border: 1px dashed var(--line); border-radius: var(--hd-radius); }
 .empty-icon { font-size: 54px; filter: drop-shadow(0 0 16px var(--glow-pink)); }
 .loading { padding: 50px; text-align: center; color: var(--muted); letter-spacing: 2px; text-transform: uppercase; }
 .section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1.6px; color: var(--muted); margin: 6px 2px; }
@@ -293,7 +293,7 @@ body:not(.booting) .boot { opacity: 0; visibility: hidden; }
 .drop-title { font-size: 20px; font-weight: 700; letter-spacing: 3px; text-transform: uppercase; }
 .drop-dest { color: var(--muted); margin-top: 4px; }
 .uploads { position: fixed; right: 18px; bottom: 18px; z-index: 55; width: min(380px, calc(100vw - 36px)); max-height: 50vh; overflow: auto;
-  background: var(--glass-strong); border: 1px solid var(--line); border-radius: var(--radius); backdrop-filter: blur(14px);
+  background: var(--glass-strong); border: 1px solid var(--line); border-radius: var(--hd-radius); backdrop-filter: blur(14px);
   box-shadow: 0 18px 50px rgba(0,0,0,.5), 0 0 24px color-mix(in srgb, var(--cyan) 15%, transparent); }
 .uploads-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-bottom: 1px solid var(--line);
   text-transform: uppercase; letter-spacing: 1.2px; font-size: 11px; color: var(--muted); }
