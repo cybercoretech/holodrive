@@ -511,3 +511,29 @@ body:not(.booting) .boot { opacity: 0; visibility: hidden; }
 .path-row .text-input { flex: 1; }
 .sessions .row { grid-template-columns: 34px minmax(0, 1fr) 150px 140px 1fr; cursor: default; }
 @media (max-width: 860px) { .sessions .row { grid-template-columns: 30px minmax(0, 1fr) auto; } .sessions .row-date, .sessions .row-size { display: none; } }
+
+/* ── time machine ──────────────────────────────────────────────────── */
+.timebar { position: sticky; top: 62px; z-index: 19; display: grid; gap: 8px; padding: 10px 12px; border-radius: var(--hd-radius);
+  border: 1px solid color-mix(in srgb, var(--orange) 55%, var(--line));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--orange) 14%, var(--panel)), color-mix(in srgb, var(--purple) 14%, var(--panel)));
+  box-shadow: 0 0 26px color-mix(in srgb, var(--orange) 18%, transparent); }
+.timebar-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.time-badge { font-weight: 700; letter-spacing: 2px; color: var(--orange); text-shadow: 0 0 10px var(--orange); }
+.time-when { font-weight: 700; }
+.timeline { display: flex; gap: 3px; align-items: flex-end; overflow-x: auto; padding: 6px 2px 2px; scrollbar-width: thin; min-height: 44px; }
+.tick { flex: 0 0 auto; width: 9px; border-radius: 3px 3px 0 0; background: color-mix(in srgb, var(--cyan) 45%, var(--line)); cursor: pointer;
+  transition: background .15s, transform .15s, box-shadow .15s; position: relative; }
+.tick.daily { height: 26px; } .tick.hourly { height: 16px; } .tick.other { height: 34px; background: color-mix(in srgb, var(--purple) 60%, var(--line)); }
+.tick:hover { background: var(--cyan); transform: scaleY(1.2); }
+.tick.on { background: var(--orange); box-shadow: 0 0 12px var(--orange); transform: scaleY(1.35); }
+.tick.daystart { margin-left: 10px; }
+.tick.daystart::before { content: attr(data-day); position: absolute; bottom: calc(100% + 3px); left: 0; font-size: 9px; color: var(--muted); white-space: nowrap; }
+body.time-travel .view .tile, body.time-travel .view .row:not(.head) { filter: sepia(.35) hue-rotate(-12deg); }
+.tile.gone, .row.gone { outline: 1px dashed var(--red); }
+.tile.gone .tile-sub, .row.gone .row-date { color: var(--red); }
+.tile.changed .tile-sub { color: var(--orange); }
+.ver-row { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--line); }
+.ver-row.now { border-color: color-mix(in srgb, var(--acid) 55%, var(--line)); }
+.ver-when { font-weight: 700; } .ver-meta { color: var(--muted); font-size: 11.5px; }
+.ver-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.ver-actions .btn { padding: 5px 8px; font-size: 10.5px; }

@@ -10,6 +10,7 @@ mod fsops;
 mod media;
 mod samba;
 mod smbconf;
+mod snapshots;
 mod views;
 mod web;
 

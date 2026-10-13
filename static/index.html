@@ -106,6 +106,7 @@
           <button type="button" class="btn btn-primary" id="upload-btn" title="Upload files (u)">⬆ Upload</button>
           <button type="button" class="btn" id="mkdir-btn" title="New folder (n)">📁 New folder</button>
           <button type="button" class="btn hide-sm" id="newfile-btn" title="New text file">📝 New file</button>
+          <button type="button" class="btn" id="time-btn" title="Time machine: this folder in past snapshots (t)">⏳ Time machine</button>
           <select id="sort-select" class="select" title="Sort">
             <option value="name">Name</option>
             <option value="mtime">Modified</option>
@@ -123,6 +124,17 @@
         <button type="button" class="btn" data-act="rename">✎ Rename</button>
         <button type="button" class="btn btn-danger" data-act="trash">🗑 Delete</button>
         <button type="button" class="btn-ghost" data-act="clear">✕</button>
+      </div>
+      <div class="timebar" id="timebar" hidden>
+        <div class="timebar-head">
+          <span class="time-badge">⏳ TIME MACHINE</span>
+          <span id="time-when" class="time-when"></span>
+          <span class="grow"></span>
+          <button type="button" class="btn" id="time-older" title="Older (←)">◀ Older</button>
+          <button type="button" class="btn" id="time-newer" title="Newer (→)">Newer ▶</button>
+          <button type="button" class="btn btn-primary" id="time-exit" title="Back to now (Esc)">⏏ Back to now</button>
+        </div>
+        <div class="timeline" id="timeline"></div>
       </div>
       <section id="view" class="view" tabindex="-1"></section>
       <input type="file" id="file-input" multiple hidden>
