@@ -36,6 +36,12 @@ Cybercore. One Rust binary, no database, no Node.
 - **Nothing is lost by accident.** Delete moves items to a per-drive trash
   (instant, on the same filesystem) with **Undo**; the Trash view restores or
   purges; old trash goes after 30 days.
+- **Samba panel.** See smbd's state, every share (read-write/read-only,
+  hidden, disabled, who's connected) and every connected client with its
+  protocol and encryption. Add a share from any folder (right-click →
+  *Share via Samba…*), edit, rename, make read-only, disable, disconnect
+  everyone, remove, reload or restart smbd, and roll back to any of the last
+  20 `smb.conf` versions. See *Samba helper* below.
 - **Search** a drive by name.
 - **Properties** show permissions, the real path, and the Samba path
   (`\\blackbox\Shared\…`, `smb://…`) to copy.
@@ -91,10 +97,34 @@ writable = true
 Then `systemctl --user restart holodrive`. Thumbnails cache in
 `~/.cache/holodrive`. Optional: `ffmpeg` for video thumbnails.
 
+## Samba helper (optional)
+
+The share list works without privileges (smb.conf is world-readable).
+Changing it, seeing sessions and controlling smbd go through a small root
+helper, `holodrive-sambactl`, run with `pkexec`:
+
+```sh
+sudo ./packaging/install-root.sh            # after ./packaging/install.sh
+sudo ./packaging/install-root.sh --uninstall
+```
+
+A polkit rule lets only the user who ran it use the helper without a
+password (Holodrive is a service and can't ask). The helper trusts nothing
+it's given:
+
+- it edits **share sections only**: name, path, comment, read only,
+  browseable, available. `[global]` (encryption, allowed hosts…) and any
+  other per-share options are kept exactly as they are;
+- a share must be an existing folder **inside your home**, not the home
+  itself, with no hidden component, not world-writable, and not under
+  anything in `/etc/holodrive/samba-deny.list` (Vault, Personal, MEGA… —
+  root-owned, edit with sudo);
+- every new smb.conf passes `testparm` before it replaces the old one, which
+  is backed up to `/var/lib/holodrive/smb-backups` (last 20 kept);
+- every change is logged: `journalctl -t holodrive-sambactl`.
+
 ## Roadmap
 
-- **Samba panel:** shares, sessions, toggles and new shares through a small
-  root helper (polkit), validated with `testparm`.
 - **Time machine:** browse and restore from snapper snapshots.
 
 The editor bundle (`static/editor.js.gz`) is built from `editor/` with

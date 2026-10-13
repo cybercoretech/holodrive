@@ -8,9 +8,10 @@ Type=simple
 ExecStart=%h/.local/bin/holodrive
 Restart=on-failure
 RestartSec=3
-NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=full
+# No NoNewPrivileges= on purpose: the Samba panel runs pkexec (setuid) to
+# reach its root helper, which that setting would block.
 
 [Install]
 WantedBy=default.target

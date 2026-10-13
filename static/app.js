@@ -235,7 +235,7 @@ async function refreshTrashCount() {
 function markNav() {
   const root = S.path.split("/")[0];
   $$(".drive").forEach((d) => d.classList.toggle("active",
-    (S.route === "trash" && d.dataset.nav === "trash") || (S.route !== "trash" && d.dataset.root === root)));
+    (S.route === "trash" && d.dataset.nav === "trash") || (S.route === "samba" && d.dataset.nav === "samba") || (S.route === "browse" || S.route === "search") && d.dataset.root === root));
 }
 
 // ── routing ────────────────────────────────────────────────────────────
@@ -245,6 +245,7 @@ async function route() {
   const [pathPart, query] = hash.split("?");
   const parts = pathPart.split("/").filter(Boolean);
   if (parts[0] === "trash") return showTrash();
+  if (parts[0] === "samba") return showSamba();
   if (parts[0] === "search") {
     const q = new URLSearchParams(query || "").get("q") || "";
     return showSearch(decPath(parts.slice(1).join("/")), q);
@@ -278,6 +279,7 @@ async function refresh() {
   if (S.route === "browse") await browse(S.path, true);
   else if (S.route === "trash") await showTrash();
   else if (S.route === "search") await showSearch(S.path, S.search);
+  else if (S.route === "samba") await showSamba();
   loadRoots().catch(() => {});
   refreshTrashCount();
 }
@@ -404,7 +406,7 @@ function paintSel() {
 }
 function updateSelbar() {
   const n = S.sel.size;
-  $("#selbar").hidden = n === 0 || S.route === "trash";
+  $("#selbar").hidden = n === 0 || S.route === "trash" || S.route === "samba";
   if (!n) return;
   const sel = selected();
   const bytes = sel.reduce((a, e) => a + (e.kind === "file" ? e.size : 0), 0);
@@ -794,6 +796,7 @@ function itemMenu(x, y) {
     writable && one && { icon: "✏️", label: "Rename", key: "F2", run: () => doRename(one) },
     writable && one && one.kind === "file" && { icon: "🧬", label: "Duplicate", run: () => doTransfer([entryPath(one)], S.path, true) },
     "-",
+    one && one.kind === "dir" && S.route === "browse" && { icon: "🔌", label: "Share via Samba…", run: () => shareDialog(null, { name: one.name.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40), path: entryPath(one) }) },
     one && { icon: "🔗", label: "Copy Samba path", run: () => { const root = S.roots.find((r) => r.id === entryPath(one).split("/")[0]); copyText(`\\\\${S.session.host}\\${root.name}\\${entryPath(one).split("/").slice(1).join("\\")}`, "Samba path"); } },
     one && { icon: "ⓘ", label: "Properties", key: "I", run: () => showProps(one) },
     writable && "-",
@@ -1027,6 +1030,152 @@ async function closeEditor(force) {
   ED.dirty = false;
 }
 const canEdit = (e) => e && e.kind === "file" && e.size <= 4 * 1024 * 1024 && ["text", "md", "other"].includes(kindOf(e));
+
+// ── Samba panel ────────────────────────────────────────────────────────
+const SMB = { data: null };
+function smbHost() { return (SMB.data && SMB.data.host) || (S.session && S.session.host) || "blackbox"; }
+function switchRow(label, help, checked) {
+  const input = h("input", { type: "checkbox" });
+  input.checked = checked;
+  const row = h("label", { class: "switch-row" }, h("span", {}, label, h("small", { text: help })), h("span", { class: "switch" }, input, h("i")));
+  return { row, input };
+}
+function shareDialog(share, opts = {}) {
+  const editing = !!share;
+  const name = h("input", { class: "text-input", value: share ? share.name : opts.name || "", spellcheck: "false", placeholder: "Music" });
+  const path = h("input", { class: "text-input", value: share ? share.path : opts.path || "", spellcheck: "false", placeholder: "pick a folder →" });
+  const comment = h("input", { class: "text-input", value: share ? share.comment : "", placeholder: "what's in it (optional)" });
+  const rw = switchRow("Writable", "off = read-only for every client", share ? !share.read_only : true);
+  const vis = switchRow("Visible", "listed when browsing \\\\" + smbHost(), share ? share.browseable : true);
+  const on = switchRow("Enabled", "off = kept in the config but not served", share ? share.available : true);
+  const msg = h("div", { class: "login-msg" });
+  const pick = h("button", { class: "btn", type: "button", text: "📁 Pick", onclick: async () => {
+    const start = path.value && !path.value.startsWith("/") ? path.value : S.path || (S.roots[0] && S.roots[0].id);
+    const d = await pickFolder("Folder to share", "🔌 Share this", start);
+    shareDialog(share, { name: name.value || (d && baseName(d)) || "", path: d || path.value });
+  } });
+  const save = async () => {
+    msg.textContent = "";
+    const body = { name: name.value.trim(), original: editing ? share.name : null, path: path.value.trim(), comment: comment.value.trim(),
+      read_only: !rw.input.checked, browseable: vis.input.checked, available: on.input.checked };
+    try {
+      const r = await api("POST", "/api/samba/share", body);
+      closeModal(); toast("🔌 " + r.message, "ok"); showSamba();
+    } catch (e) { msg.textContent = e.message; }
+  };
+  modal(editing ? `Edit share ${share.name}` : "New Samba share", h("form", { style: { display: "grid", gap: "12px" }, onsubmit: (ev) => { ev.preventDefault(); save(); } },
+    h("label", { class: "field" }, h("span", { class: "field-label", text: "share name (\\\\" + smbHost() + "\\name)" }), name),
+    h("div", { class: "field" }, h("span", { class: "field-label", text: "folder" }), h("div", { class: "path-row" }, path, pick)),
+    h("label", { class: "field" }, h("span", { class: "field-label", text: "comment" }), comment),
+    rw.row, vis.row, on.row, msg),
+    [h("button", { class: "btn", type: "button", text: "Cancel", onclick: closeModal }), h("button", { class: "btn btn-primary", type: "button", text: editing ? "💾 Save share" : "🔌 Create share", onclick: save })]);
+  $(".modal-window").classList.add("wide");
+}
+async function smbAct(body, okMsg) {
+  try { const r = await api("POST", "/api/samba/action", body); toast(okMsg || r.message, "ok"); showSamba(); } catch (e) { fail(e); }
+}
+async function smbQuick(share, change) {
+  try {
+    const r = await api("POST", "/api/samba/share", { name: share.name, original: share.name, path: share.path, comment: share.comment,
+      read_only: share.read_only, browseable: share.browseable, available: share.available, ...change });
+    toast("🔌 " + r.message, "ok"); showSamba();
+  } catch (e) { fail(e); }
+}
+async function showBackups() {
+  let b;
+  try { b = (await api("GET", "/api/samba/backups")).data; } catch (e) { fail(e); return; }
+  const list = h("div", { class: "picker" }, b.length ? b.map((x) => h("div", { class: "picker-row", style: { justifyContent: "space-between" } },
+    h("span", {}, h("span", { text: new Date(x.time * 1000).toLocaleString() }), h("small", { class: "muted", text: "   " + x.shares.join(", ") })),
+    h("button", { class: "btn", type: "button", text: "↺ Restore", onclick: async () => {
+      if (!(await confirmBox("Restore this smb.conf?", `Shares then: ${x.shares.join(", ") || "none"}. The current file is backed up first.`, "Restore"))) return;
+      try { const r = await api("POST", "/api/samba/restore", { name: x.name }); toast("↺ " + r.message, "ok"); showSamba(); } catch (e) { fail(e); }
+    } }))) : h("div", { class: "muted", style: { padding: "10px" }, text: "No backups yet — one is made before every change." }));
+  modal("smb.conf backups", list, [h("button", { class: "btn btn-primary", type: "button", text: "Close", onclick: closeModal })]);
+  $(".modal-window").classList.add("wide");
+}
+async function showSamba() {
+  S.route = "samba"; S.sel.clear(); updateSelbar();
+  $("#crumbs").replaceChildren(h("span", { class: "crumb last", text: "🔌 Samba shares" }));
+  $("#toolbar").hidden = true; markNav();
+  const view = $("#view");
+  if (!SMB.data) view.replaceChildren(h("div", { class: "loading", text: "probing smbd…" }));
+  let d;
+  try { d = SMB.data = await api("GET", "/api/samba"); } catch (e) { view.replaceChildren(h("div", { class: "empty", text: e.message })); return; }
+  if (S.route !== "samba") return;
+  $("#smb-count").textContent = String(d.shares.length);
+  const st = d.smbstatus || {};
+  const sessions = Object.values(st.sessions || {});
+  const tcons = Object.values(st.tcons || {});
+  const files = Object.keys(st.open_files || {}).length;
+  const svc = d.service || (d.helper ? "unknown" : "—");
+  const status = h("div", { class: "smb-status" },
+    h("div", { class: "stat" }, h("span", { class: "stat-l", text: "smbd" }), h("span", { class: "stat-v " + (svc === "active" ? "ok" : svc === "—" ? "" : "bad"), text: svc === "active" ? "● online" : svc })),
+    h("div", { class: "stat" }, h("span", { class: "stat-l", text: "shares" }), h("span", { class: "stat-v", text: String(d.shares.length) })),
+    h("div", { class: "stat" }, h("span", { class: "stat-l", text: "sessions" }), h("span", { class: "stat-v", text: d.helper ? String(sessions.length) : "—" })),
+    h("div", { class: "stat" }, h("span", { class: "stat-l", text: "open files" }), h("span", { class: "stat-v", text: d.helper ? String(files) : "—" })),
+    h("div", { class: "stat" }, h("span", { class: "stat-l", text: "version" }), h("span", { class: "stat-v", style: { fontSize: "14px" }, text: st.version || "—" })));
+  const actions = h("div", { class: "smb-actions" },
+    h("button", { class: "btn btn-primary", type: "button", text: "➕ New share", disabled: !d.helper, onclick: () => shareDialog(null) }),
+    h("button", { class: "btn", type: "button", text: "🔄 Reload config", disabled: !d.helper, onclick: () => smbAct({ action: "reload" }) }),
+    h("button", { class: "btn", type: "button", text: "⟳ Restart smbd", disabled: !d.helper, onclick: async () => { if (await confirmBox("Restart smbd?", "Everyone connected is dropped for a moment (darkbox's mount reconnects by itself).", "Restart")) smbAct({ action: "restart" }); } }),
+    h("button", { class: "btn", type: "button", text: "🕘 Backups", disabled: !d.helper, onclick: showBackups }),
+    h("span", { class: "grow" }),
+    h("span", { class: "muted", text: "every change: validated with testparm · backed up · logged" }));
+  const parts = [status, actions];
+  if (!d.helper) parts.push(h("div", { class: "notice" },
+    h("strong", { text: "⚡ One step left to manage Samba from here" }),
+    h("span", { text: "Holodrive can read the shares, but changes, sessions and service control need its small root helper. In the holodrive checkout, run once:" }),
+    h("code", { text: "sudo ./packaging/install-root.sh" })));
+  else if (d.status_error) parts.push(h("div", { class: "notice" }, h("strong", { text: "⚠️ The helper didn't answer" }), h("span", { text: d.status_error })));
+  parts.push(h("div", { class: "section-title", text: "shares" }));
+  const grid = h("div", { class: "smb-grid" });
+  for (const sh of d.shares) {
+    const root = sh.drive ? S.roots.find((r) => r.id === sh.drive.split("/")[0]) : null;
+    const unc = `\\\\${smbHost()}\\${sh.name}`;
+    grid.append(h("div", { class: "smb-card" + (sh.read_only ? " ro" : "") + (sh.available ? "" : " off") },
+      h("div", { class: "smb-head" },
+        h("span", { class: "smb-icon emoji", text: root ? root.icon : "📁" }),
+        h("div", { style: { minWidth: 0 } }, h("div", { class: "smb-name", text: sh.name }), sh.comment ? h("div", { class: "smb-comment", text: sh.comment }) : null)),
+      h("div", { class: "smb-path", title: sh.path, text: sh.path }),
+      h("div", { class: "badges" },
+        h("span", { class: "badge " + (sh.read_only ? "ro" : "rw"), text: sh.read_only ? "read-only" : "read-write" }),
+        sh.browseable ? null : h("span", { class: "badge", text: "hidden" }),
+        sh.available ? null : h("span", { class: "badge warn", text: "disabled" }),
+        sh.exists ? null : h("span", { class: "badge warn", text: "folder missing" }),
+        sh.connections ? h("span", { class: "badge live", text: `● ${sh.connections} connected` }) : null,
+        sh.extra && sh.extra.length ? h("span", { class: "badge", title: sh.extra.join("\n"), text: `+${sh.extra.length} options` }) : null),
+      h("div", { class: "smb-buttons" },
+        sh.drive ? h("a", { class: "btn", href: "#/browse/" + encPath(sh.drive), text: "📂 Open" }) : null,
+        h("button", { class: "btn", type: "button", text: "🔗 Copy path", onclick: () => copyText(unc, "Samba path") }),
+        d.helper ? h("button", { class: "btn", type: "button", text: "✏️ Edit", onclick: () => shareDialog(sh) }) : null,
+        d.helper ? h("button", { class: "btn", type: "button", text: sh.read_only ? "🔓 Make writable" : "🔒 Read-only", onclick: () => smbQuick(sh, { read_only: !sh.read_only }) }) : null,
+        d.helper ? h("button", { class: "btn", type: "button", text: sh.available ? "⏸ Disable" : "▶ Enable", onclick: () => smbQuick(sh, { available: !sh.available }) }) : null,
+        d.helper && sh.connections ? h("button", { class: "btn", type: "button", text: "⏏ Disconnect all", onclick: async () => { if (await confirmBox(`Disconnect everyone from ${sh.name}?`, "Clients can reconnect right away; open files may lose unsaved work.", "Disconnect", true)) smbAct({ action: "close-share", name: sh.name }); } }) : null,
+        d.helper ? h("button", { class: "btn btn-danger", type: "button", text: "🗑", title: "Remove share (the folder stays)", onclick: async () => {
+          if (!(await confirmBox(`Remove share ${sh.name}?`, `Only the Samba share goes; ${sh.path} and its files stay. A backup of smb.conf is made first.`, "Remove share", true))) return;
+          try { const r = await api("POST", "/api/samba/remove", { name: sh.name }); toast("🗑 " + r.message, "ok"); showSamba(); } catch (e) { fail(e); }
+        } }) : null)));
+  }
+  if (!d.shares.length) grid.append(h("div", { class: "empty" }, h("div", { class: "empty-icon emoji", text: "🔌" }), h("div", { text: d.conf_readable ? "No shares yet." : "Can't read /etc/samba/smb.conf." })));
+  parts.push(grid);
+  if (d.helper) {
+    parts.push(h("div", { class: "section-title", text: `connected clients · ${sessions.length}` }));
+    const list = h("div", { class: "list sessions" });
+    if (!sessions.length) list.append(h("div", { class: "row" }, h("span"), h("span", { class: "muted", text: "nobody connected right now" })));
+    for (const se of sessions) {
+      const mine = tcons.filter((t) => t.session_id === se.session_id).map((t) => t.service);
+      const enc = se.encryption && se.encryption.cipher ? `🔐 ${se.encryption.cipher}` : "⚠️ not encrypted";
+      list.append(h("div", { class: "row" },
+        h("span", { class: "row-icon emoji", text: "🖥️" }),
+        h("span", { class: "row-name", title: se.hostname || "", text: `${se.username || "?"} @ ${se.remote_machine || se.hostname || "?"}` }),
+        h("span", { class: "row-size", text: se.session_dialect || "" }),
+        h("span", { class: "row-date", text: enc }),
+        h("span", { class: "row-name muted", text: mine.length ? "→ " + [...new Set(mine)].join(", ") : "" })));
+    }
+    parts.push(list);
+  }
+  view.replaceChildren(...parts);
+}
 
 // ── trash & search views ───────────────────────────────────────────────
 async function showTrash() {

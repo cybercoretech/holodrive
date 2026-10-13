@@ -14,6 +14,8 @@ CONF="${XDG_CONFIG_HOME:-$HOME/.config}/holodrive/config.toml"
 cargo build --release --locked
 target_dir="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import sys,json;print(json.load(sys.stdin)["target_directory"])')"
 install -Dm755 "$target_dir/release/holodrive" "$HOME/.local/bin/holodrive"
+# Staged for install-root.sh, which copies it root-owned into /usr/local/bin.
+install -Dm755 "$target_dir/release/holodrive-sambactl" "$HOME/.local/share/holodrive/holodrive-sambactl"
 
 if [[ ! -f "$CONF" ]]; then
   ts_name=""
@@ -44,3 +46,6 @@ else
   echo "Holodrive is up: http://127.0.0.1:$PORT/"
 fi
 echo "Config: $CONF  ·  logs: journalctl --user -u holodrive -f"
+if [[ ! -x /usr/local/bin/holodrive-sambactl ]] || ! cmp -s "$target_dir/release/holodrive-sambactl" /usr/local/bin/holodrive-sambactl; then
+  echo "For the Samba panel (or to update its helper), run once:  sudo ./packaging/install-root.sh"
+fi
