@@ -97,6 +97,20 @@ fn allowed_hosts(s: &AppState) -> Vec<String> {
     v
 }
 
+fn is_local_host(host: &str, port: u16) -> bool {
+    host == format!("127.0.0.1:{port}") || host == format!("localhost:{port}")
+}
+
+/// Direct browser access on this machine, with the bypass enabled. Anything
+/// that came through a proxy (tailscale serve adds these headers) never counts,
+/// even if it claims a localhost Host.
+fn local_trusted(s: &AppState, req: &Request, host: &str) -> bool {
+    const PROXIED: [&str; 3] = ["x-forwarded-for", "forwarded", "tailscale-user-login"];
+    s.cfg.local_auth_bypass
+        && is_local_host(host, s.port)
+        && !PROXIED.iter().any(|h| req.headers().contains_key(*h))
+}
+
 fn session_id(req: &Request) -> Option<String> {
     let cookies = req.headers().get(header::COOKIE)?.to_str().ok()?;
     auth::cookie_value(cookies, auth::COOKIE).map(str::to_string)
@@ -119,6 +133,7 @@ async fn guard(State(s): State<Shared>, req: Request, next: Next) -> Response {
     if !hosts.iter().any(|h| h == host) {
         return (StatusCode::MISDIRECTED_REQUEST, "unexpected Host header").into_response();
     }
+    let local_trusted = local_trusted(&s, &req, host);
     let path = req.uri().path().to_string();
     let mutating = !matches!(*req.method(), Method::GET | Method::HEAD);
     if mutating
@@ -137,7 +152,7 @@ async fn guard(State(s): State<Shared>, req: Request, next: Next) -> Response {
     let public = !path.starts_with("/api/")
         || PUBLIC_API.contains(&path.as_str())
         || path.starts_with("/api/cybergrid/css/");
-    if !public {
+    if !public && !local_trusted {
         let Some(session) = session_id(&req).and_then(|id| s.auth.get(&id)) else {
             return err(401, "sign in first");
         };
@@ -266,9 +281,16 @@ fn host_name() -> String {
 }
 
 async fn session(State(s): State<Shared>, req: Request) -> Json<Value> {
+    let host = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    let local_trusted = local_trusted(&s, &req, host);
     let sess = session_id(&req).and_then(|id| s.auth.get(&id));
     Json(json!({
-        "authed": sess.is_some(),
+        "authed": local_trusted || sess.is_some(),
+        "local": local_trusted,
         "csrf": sess.map(|x| x.csrf),
         "configured": !s.cfg.password_hash.is_empty(),
         "host": host_name(),
@@ -749,12 +771,69 @@ async fn upload(State(s): State<Shared>, Query(q): Query<UploadQ>, body: Body) -
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use axum::http::Request;
+
     #[test]
     fn unpct_decodes() {
         assert_eq!(super::unpct("a%2Fb%20c+d"), "a/b c d");
         assert_eq!(super::unpct("100%"), "100%");
         assert_eq!(super::unpct("%zz"), "%zz");
         assert_eq!(super::pct("a b/ü"), "a%20b%2F%C3%BC");
+    }
+
+    #[tokio::test]
+    async fn trusted_local_access_skips_login_but_tailnet_still_requires_it() {
+        let mut cfg = Config::starter();
+        cfg.password_hash = "configured".into();
+        cfg.local_auth_bypass = true;
+        cfg.hosts.push("blackbox.tail9311b5.ts.net:8768".into());
+        let state = Arc::new(AppState {
+            cfg: Arc::new(cfg),
+            auth: Auth::new(30),
+            port: 8768,
+            thumbs: tokio::sync::Semaphore::new(2),
+        });
+        let app = router(state);
+
+        let local = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/roots")
+                    .header(header::HOST, "127.0.0.1:8768")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(local.status(), StatusCode::OK);
+
+        let proxied = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/roots")
+                    .header(header::HOST, "127.0.0.1:8768")
+                    .header("x-forwarded-for", "100.64.0.7")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(proxied.status(), StatusCode::UNAUTHORIZED);
+
+        let tailnet = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/roots")
+                    .header(header::HOST, "blackbox.tail9311b5.ts.net:8768")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(tailnet.status(), StatusCode::UNAUTHORIZED);
     }
 }
 

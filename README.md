@@ -77,6 +77,9 @@ Cybercore. One Rust binary, no database, no Node.
   SameSite=Strict session cookie; every change also needs the session's CSRF
   token and an allowed Origin. Only known `Host` names are accepted (DNS
   rebinding). Five wrong passwords in ten minutes pause logins.
+- Optional `local_auth_bypass = true` skips login only for direct
+  `127.0.0.1` / `localhost` access. It is disabled by default and does not
+  affect the Tailscale host or remote clients.
 - **Paths can't escape.** Every path is resolved against its drive; `..`,
   hidden names (dot files: `.git`, `.env`, `.snapshots`) and symlinks that lead
   outside the drive are refused. Read-only drives refuse every change.
@@ -100,6 +103,7 @@ change them:
 listen = "127.0.0.1:8768"
 hosts = ["blackbox.tail1234.ts.net:8768"]   # Host names tailscale serve forwards
 password_hash = "$argon2id$…"               # set with `holodrive passwd`
+local_auth_bypass = false                   # true trusts this PC's localhost
 session_days = 30
 trash_days = 30
 

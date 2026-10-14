@@ -41,6 +41,10 @@ pub struct Config {
     pub hosts: Vec<String>,
     #[serde(default)]
     pub password_hash: String,
+    /// Trust direct localhost browser access without a password. Keep disabled
+    /// by default; this is intended only for a single-user desktop setup.
+    #[serde(default)]
+    pub local_auth_bypass: bool,
     #[serde(default = "default_session_days")]
     pub session_days: u64,
     #[serde(default = "default_trash_days")]
@@ -153,6 +157,7 @@ impl Config {
             listen: format!("127.0.0.1:{DEFAULT_PORT}"),
             hosts: vec![],
             password_hash: String::new(),
+            local_auth_bypass: false,
             session_days: default_session_days(),
             trash_days: default_trash_days(),
             roots: candidates.into_iter().filter(|r| r.path.is_dir()).collect(),
