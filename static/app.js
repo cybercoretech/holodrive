@@ -55,6 +55,8 @@ const baseName = (p) => p.split("/").pop();
 
 // ── API ────────────────────────────────────────────────────────────────
 let CSRF = null;
+// Signed in (or trusted local access, which has no session and no CSRF token).
+let AUTHED = false;
 async function api(method, url, body) {
   const opts = { method, headers: {}, credentials: "same-origin" };
   if (method !== "GET") opts.headers["X-Holodrive-Csrf"] = CSRF || "";
@@ -157,6 +159,7 @@ async function bootLog() {
 }
 
 function showLogin() {
+  AUTHED = false;
   $("#app").hidden = true;
   $("#login").hidden = false;
   document.body.classList.remove("booting");
@@ -167,6 +170,7 @@ async function start() {
   const [, sess] = await Promise.all([bootLog(), api("GET", "/api/session").catch(() => null)]);
   S.session = sess;
   if (sess) {
+    if (sess.local) $("#logout-btn").hidden = true;
     $("#login-host").textContent = `${sess.host} · ${sess.user}`;
     $("#host-name").textContent = sess.host;
     document.title = `HOLODRIVE · ${sess.host}`;
@@ -202,6 +206,7 @@ $("#logout-btn").addEventListener("click", async () => {
 
 let appWired = false;
 async function enterApp() {
+  AUTHED = true;
   $("#app").hidden = false;
   document.body.classList.remove("booting");
   if (!appWired) { wireApp(); appWired = true; }
@@ -257,7 +262,7 @@ async function route() {
   const first = S.roots.find((r) => r.online);
   location.replace("#/browse/" + encPath(last && S.roots.some((r) => r.id === last.split("/")[0]) ? last : first ? first.id : ""));
 }
-window.addEventListener("hashchange", () => { if (CSRF) route(); });
+window.addEventListener("hashchange", () => { if (AUTHED) route(); });
 const go = (vpath) => { location.hash = "#/browse/" + encPath(vpath); };
 
 // ── browse ─────────────────────────────────────────────────────────────
