@@ -6,16 +6,21 @@
 //! choosing a theme on the phone never repaints the desktop.
 
 use axum::Json;
-use axum::extract::{Path, Query};
+use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use futures_util::stream::{self, Stream};
+use futures_util::stream::{self, Stream, StreamExt};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{convert::Infallible, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
-pub async fn theme_events() -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+use crate::web::AppState;
+
+pub async fn theme_events(
+    State(s): State<Arc<AppState>>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let mut stopping = s.stopping.clone();
     let events = stream::unfold(None, |last_revision| async move {
         loop {
             if let Ok(catalog) = catalog() {
@@ -29,6 +34,11 @@ pub async fn theme_events() -> Sse<impl Stream<Item = Result<Event, Infallible>>
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
+    });
+    // The stream never ends on its own; end it when the server stops, or
+    // graceful shutdown waits on every open tab until systemd kills us.
+    let events = events.take_until(async move {
+        let _ = stopping.wait_for(|stop| *stop).await;
     });
     Sse::new(events).keep_alive(KeepAlive::default())
 }
