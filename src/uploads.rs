@@ -8,6 +8,11 @@
 //! that lost track just continues from there. `finish` picks the final name
 //! (no clobbering, like single-shot uploads) and moves the file into place.
 //! Uploads untouched for `STALE_SECS` are swept.
+//!
+//! Single-request uploads (`POST /api/upload`, drop boxes) stream into a
+//! `single-*.part` spool file in the same folder, so a crash never leaves
+//! debris beside the target: no single upload survives a restart, so
+//! startup clears them all, and the daily sweep clears any idle for an hour.
 
 use crate::config::{Config, Root};
 use crate::fsops::{self, FsError, FsResult};
@@ -20,6 +25,9 @@ pub const UPLOAD_DIR: &str = ".holodrive-uploads";
 /// What clients should send per request; the server accepts any size.
 pub const CHUNK: u64 = 8 * 1024 * 1024;
 const STALE_SECS: u64 = 24 * 3600;
+/// A spool or orphaned part nobody has written to for this long is dead.
+const ORPHAN_SECS: u64 = 3600;
+const SPOOL_PREFIX: &str = "single-";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Meta {
@@ -137,7 +145,7 @@ pub fn finish(cfg: &Config, id: &str) -> FsResult<Value> {
 
 /// Rename; if a subfolder is another filesystem, copy beside the target
 /// first so the target still only ever appears complete.
-fn move_into_place(from: &Path, to: &Path) -> FsResult<()> {
+pub fn move_into_place(from: &Path, to: &Path) -> FsResult<()> {
     match std::fs::rename(from, to) {
         Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
             let tmp =
@@ -154,6 +162,18 @@ fn move_into_place(from: &Path, to: &Path) -> FsResult<()> {
     }
 }
 
+/// A fresh spool file for a single-request upload to `vpath` (a path
+/// `fsops::upload_target` returned), on the same drive.
+pub fn spool_path(cfg: &Config, vpath: &str) -> FsResult<PathBuf> {
+    let id = vpath.split('/').next().unwrap_or_default();
+    let root = cfg
+        .root(id)
+        .ok_or_else(|| FsError(404, format!("no root {id:?}")))?;
+    let dir = dir_of(root);
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.join(format!("{SPOOL_PREFIX}{}.part", crate::auth::random_hex(8))))
+}
+
 pub fn cancel(cfg: &Config, id: &str) -> FsResult<Value> {
     let u = find(cfg, id)?;
     let _ = std::fs::remove_file(&u.part);
@@ -161,15 +181,17 @@ pub fn cancel(cfg: &Config, id: &str) -> FsResult<Value> {
     Ok(json!({ "ok": true }))
 }
 
-/// Remove uploads nobody has touched for a day.
-pub fn sweep(cfg: &Config) -> usize {
-    let cutoff = SystemTime::now() - Duration::from_secs(STALE_SECS);
-    let stale = |p: &Path| {
+/// Remove resumable uploads nobody has touched for a day, and dead spool
+/// or orphaned parts: all spools at `startup`, else those idle an hour.
+pub fn sweep(cfg: &Config, startup: bool) -> usize {
+    let older = |p: &Path, secs: u64| {
+        let cutoff = SystemTime::now() - Duration::from_secs(secs);
         std::fs::metadata(p)
             .and_then(|m| m.modified())
             .map(|t| t < cutoff)
             .unwrap_or(false)
     };
+    let stale = |p: &Path| older(p, STALE_SECS);
     let mut n = 0;
     for r in &cfg.roots {
         let Ok(rd) = std::fs::read_dir(dir_of(r)) else {
@@ -178,12 +200,11 @@ pub fn sweep(cfg: &Config) -> usize {
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
             let Some(id) = name.strip_suffix(".json") else {
-                // A .part without its record is junk once it's old.
-                if name.ends_with(".part")
+                // A spool, or a part whose record is gone.
+                let dead = name.ends_with(".part")
                     && !e.path().with_extension("json").exists()
-                    && stale(&e.path())
-                    && std::fs::remove_file(e.path()).is_ok()
-                {
+                    && (startup && name.starts_with(SPOOL_PREFIX) || older(&e.path(), ORPHAN_SECS));
+                if dead && std::fs::remove_file(e.path()).is_ok() {
                     n += 1;
                 }
                 continue;
@@ -291,7 +312,7 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
-        assert_eq!(sweep(&c), 0, "fresh uploads stay");
+        assert_eq!(sweep(&c, false), 0, "fresh uploads stay");
         let old = SystemTime::now() - Duration::from_secs(STALE_SECS + 60);
         let part = d.join(format!("a/{UPLOAD_DIR}/{id}.part"));
         std::fs::File::options()
@@ -300,8 +321,41 @@ mod tests {
             .unwrap()
             .set_modified(old)
             .unwrap();
-        assert_eq!(sweep(&c), 1);
+        assert_eq!(sweep(&c, false), 1);
         assert!(!part.exists());
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn spools_are_swept_at_startup_and_when_idle() {
+        let d = tmpdir("spool");
+        let c = cfg(&d);
+        let set_old = |p: &Path, secs: u64| {
+            std::fs::File::options()
+                .write(true)
+                .open(p)
+                .unwrap()
+                .set_modified(SystemTime::now() - Duration::from_secs(secs))
+                .unwrap();
+        };
+        let resumable = start(&c, "a", "keep", 4, false).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let fresh = spool_path(&c, "a/f.bin").unwrap();
+        std::fs::write(&fresh, b"x").unwrap();
+        assert!(fresh.starts_with(d.join("a").join(UPLOAD_DIR)));
+        assert_eq!(sweep(&c, false), 0, "a spool being written stays");
+
+        let idle = spool_path(&c, "a/g.bin").unwrap();
+        std::fs::write(&idle, b"x").unwrap();
+        set_old(&idle, ORPHAN_SECS + 60);
+        assert_eq!(sweep(&c, false), 1);
+        assert!(!idle.exists() && fresh.exists());
+
+        assert_eq!(sweep(&c, true), 1, "no single upload survives a restart");
+        assert!(!fresh.exists());
+        assert!(find(&c, &resumable).is_ok(), "resumable uploads are kept");
         std::fs::remove_dir_all(d).unwrap();
     }
 }

@@ -195,9 +195,9 @@ async fn serve(path: PathBuf) {
             cfg.trash_days
         );
     }
-    let swept = uploads::sweep(&cfg);
+    let swept = uploads::sweep(&cfg, true);
     if swept > 0 {
-        println!("[Holodrive] removed {swept} upload(s) untouched for a day");
+        println!("[Holodrive] removed {swept} unfinished upload(s)");
     }
     let listen = cfg.listen.clone();
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
@@ -219,7 +219,7 @@ async fn serve(path: PathBuf) {
             let cfg = daily.clone();
             let _ = tokio::task::spawn_blocking(move || {
                 fsops::purge_old(&cfg, cfg.trash_days);
-                uploads::sweep(&cfg);
+                uploads::sweep(&cfg, false);
             })
             .await;
         }
