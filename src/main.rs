@@ -11,6 +11,7 @@ mod media;
 mod samba;
 mod smbconf;
 mod snapshots;
+mod tokens;
 mod uploads;
 mod views;
 mod web;
@@ -25,7 +26,10 @@ fn usage() -> ! {
          USAGE:\n  \
          holodrive [--config PATH]          serve (default)\n  \
          holodrive init [--host NAME:PORT]  write a starter config with your shared folders\n  \
-         holodrive passwd                   set the login password\n\n\
+         holodrive passwd                   set the login password\n  \
+         holodrive token add NAME [--read-only]  make a device token (shown once)\n  \
+         holodrive token list               show device tokens\n  \
+         holodrive token revoke ID          revoke one\n\n\
          Config: {}",
         config::config_path().display()
     );
@@ -51,6 +55,7 @@ fn main() {
         None => serve(config_path),
         Some("init") => init(config_path, &args[1..]),
         Some("passwd") => passwd(config_path),
+        Some("token") => token(config_path, &args[1..]),
         Some("-h" | "--help" | "help") => usage(),
         Some(other) => die(format!("unknown command {other:?} (try --help)")),
     }
@@ -104,6 +109,74 @@ fn passwd(path: PathBuf) {
 
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
+fn token(config: PathBuf, rest: &[String]) {
+    let store = tokens::Store::open(tokens::path_for(&config));
+    let when = |t: Option<u64>| {
+        let Some(t) = t else {
+            return "never".to_string();
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(t);
+        match now.saturating_sub(t) {
+            s if s < 60 => "just now".into(),
+            s if s < 3600 => format!("{} min ago", s / 60),
+            s if s < 86_400 => format!("{} h ago", s / 3600),
+            s => format!("{} days ago", s / 86_400),
+        }
+    };
+    match rest.first().map(String::as_str) {
+        Some("add") => {
+            let read_only = rest.iter().any(|a| a == "--read-only");
+            let name: Vec<&str> = rest[1..]
+                .iter()
+                .filter(|a| *a != "--read-only")
+                .map(String::as_str)
+                .collect();
+            let (t, secret) = store
+                .create(&name.join(" "), read_only)
+                .unwrap_or_else(|e| die(e));
+            println!(
+                "token for {:?} ({}), id {}:\n\n  {secret}\n\nShown once; it's not stored. Revoke with `holodrive token revoke {}`.",
+                t.name,
+                if t.read_only {
+                    "read-only"
+                } else {
+                    "full access"
+                },
+                t.id,
+                t.id
+            );
+        }
+        Some("list") => {
+            for t in store.list() {
+                println!(
+                    "{}  {:<24} {:<11} last used {}{}",
+                    t.id,
+                    t.name,
+                    if t.read_only { "read-only" } else { "full" },
+                    when(t.last_used),
+                    t.last_from
+                        .map(|f| format!(" from {f}"))
+                        .unwrap_or_default()
+                );
+            }
+        }
+        Some("revoke") => {
+            let id = rest
+                .get(1)
+                .unwrap_or_else(|| die("which id? see `holodrive token list`"));
+            match store.revoke(id) {
+                Ok(true) => println!("revoked {id}"),
+                Ok(false) => die(format!("no token {id}")),
+                Err(e) => die(e),
+            }
+        }
+        _ => die("usage: holodrive token add NAME [--read-only] | list | revoke ID"),
+    }
+}
+
 #[tokio::main]
 async fn serve(path: PathBuf) {
     let cfg = Config::load(&path).unwrap_or_else(|e| die(format!("{e:#}")));
@@ -133,6 +206,7 @@ async fn serve(path: PathBuf) {
         thumbs: tokio::sync::Semaphore::new(2),
         stopping: stop_rx.clone(),
         sending: Default::default(),
+        tokens: tokens::Store::open(tokens::path_for(&path)),
     });
     let daily = state.cfg.clone();
     tokio::spawn(async move {

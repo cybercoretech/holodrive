@@ -14,7 +14,7 @@
 use crate::auth::{self, Auth, LoginBrake};
 use crate::config::Config;
 use crate::fsops::{self, FsError};
-use crate::{cybergrid, media, samba, smbconf, snapshots, uploads, views};
+use crate::{cybergrid, media, samba, smbconf, snapshots, tokens, uploads, views};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
@@ -39,6 +39,7 @@ pub struct AppState {
     pub stopping: tokio::sync::watch::Receiver<bool>,
     /// Resumable uploads with a chunk being written right now.
     pub sending: std::sync::Mutex<std::collections::HashSet<String>>,
+    pub tokens: tokens::Store,
 }
 
 type Shared = Arc<AppState>;
@@ -97,6 +98,8 @@ pub fn router(state: Shared) -> Router {
         )
         .route("/api/upload/finish", post(upload_finish))
         .route("/api/upload/cancel", post(upload_cancel))
+        .route("/api/tokens", get(tokens_list).post(tokens_create))
+        .route("/api/tokens/revoke", post(tokens_revoke))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
 }
@@ -123,6 +126,31 @@ fn local_trusted(s: &AppState, req: &Request, host: &str) -> bool {
         && is_local_host(host, s.port)
         && !PROXIED.iter().any(|h| req.headers().contains_key(*h))
 }
+
+fn bearer(req: &Request) -> Option<&str> {
+    req.headers()
+        .get(header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+        .map(str::trim)
+}
+
+/// Where a request came from, for a token's "last used" line.
+fn origin_label(req: &Request) -> String {
+    let h = |name: &str| {
+        req.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    h("tailscale-user-login")
+        .or_else(|| h("x-forwarded-for"))
+        .unwrap_or_else(|| "this PC".into())
+}
+
+/// Only a browser session (or this PC) may manage Samba and device tokens.
+const SESSION_ONLY: &[&str] = &["/api/samba", "/api/tokens"];
 
 fn session_id(req: &Request) -> Option<String> {
     let cookies = req.headers().get(header::COOKIE)?.to_str().ok()?;
@@ -165,7 +193,17 @@ async fn guard(State(s): State<Shared>, req: Request, next: Next) -> Response {
     let public = !path.starts_with("/api/")
         || PUBLIC_API.contains(&path.as_str())
         || path.starts_with("/api/cybergrid/css/");
-    if !public && !local_trusted {
+    if !public && let Some(secret) = bearer(&req) {
+        let Some(grant) = s.tokens.verify(secret, &origin_label(&req)) else {
+            return err(401, "unknown or revoked device token");
+        };
+        if SESSION_ONLY.iter().any(|p| path.starts_with(p)) {
+            return err(403, "device tokens can't manage Samba or tokens");
+        }
+        if mutating && grant.read_only {
+            return err(403, format!("the token for {} is read-only", grant.name));
+        }
+    } else if !public && !local_trusted {
         let Some(session) = session_id(&req).and_then(|id| s.auth.get(&id)) else {
             return err(401, "sign in first");
         };
@@ -301,8 +339,10 @@ async fn session(State(s): State<Shared>, req: Request) -> Json<Value> {
         .unwrap_or("");
     let local_trusted = local_trusted(&s, &req, host);
     let sess = session_id(&req).and_then(|id| s.auth.get(&id));
+    let device = bearer(&req).and_then(|t| s.tokens.verify(t, &origin_label(&req)));
     Json(json!({
-        "authed": local_trusted || sess.is_some(),
+        "authed": local_trusted || sess.is_some() || device.is_some(),
+        "device": device.as_ref().map(|g| json!({ "name": g.name, "read_only": g.read_only })),
         "local": local_trusted,
         "csrf": sess.map(|x| x.csrf),
         "configured": !s.cfg.password_hash.is_empty(),
@@ -914,6 +954,37 @@ async fn upload_chunk(State(s): State<Shared>, Query(q): Query<ChunkQ>, body: Bo
     }
 }
 
+async fn tokens_list(State(s): State<Shared>) -> Json<Value> {
+    let list: Vec<Value> = s.tokens.list().iter().map(|t| t.public()).collect();
+    Json(json!({ "tokens": list }))
+}
+
+#[derive(Deserialize)]
+struct NewToken {
+    name: String,
+    #[serde(default)]
+    read_only: bool,
+}
+
+async fn tokens_create(State(s): State<Shared>, Json(b): Json<NewToken>) -> Response {
+    match s.tokens.create(&b.name, b.read_only) {
+        Ok((t, secret)) => {
+            let mut v = t.public();
+            v["token"] = json!(secret);
+            Json(v).into_response()
+        }
+        Err(e) => err(400, e),
+    }
+}
+
+async fn tokens_revoke(State(s): State<Shared>, Json(b): Json<IdQ>) -> Response {
+    match s.tokens.revoke(&b.id) {
+        Ok(true) => Json(json!({ "ok": true })).into_response(),
+        Ok(false) => err(404, "no such token"),
+        Err(e) => err(500, e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -948,6 +1019,7 @@ mod tests {
             thumbs: tokio::sync::Semaphore::new(2),
             stopping: tokio::sync::watch::channel(false).1,
             sending: Default::default(),
+            tokens: crate::tokens::Store::memory(),
         }));
         let call = |method: &str, uri: String, body: Body, json: bool| {
             let mut b = Request::builder()
@@ -1027,6 +1099,124 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn device_tokens_authenticate_without_csrf_and_respect_limits() {
+        let dir = std::env::temp_dir().join(format!("holodrive-web-tok-{}", auth::random_hex(4)));
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        let mut cfg = Config::starter();
+        cfg.password_hash = "configured".into();
+        cfg.hosts.push("blackbox.tail9311b5.ts.net:8768".into());
+        cfg.roots = vec![crate::config::Root {
+            id: "a".into(),
+            name: "A".into(),
+            path: dir.join("a"),
+            icon: String::new(),
+            writable: true,
+        }];
+        let store = crate::tokens::Store::memory();
+        let (_, full) = store.create("Pixel", false).unwrap();
+        let (ro_tok, ro) = store.create("Tablet", true).unwrap();
+        let state = Arc::new(AppState {
+            cfg: Arc::new(cfg),
+            auth: Auth::new(30),
+            port: 8768,
+            thumbs: tokio::sync::Semaphore::new(2),
+            stopping: tokio::sync::watch::channel(false).1,
+            sending: Default::default(),
+            tokens: store,
+        });
+        let app = router(state.clone());
+        let call = |method: &str, uri: &str, token: Option<&str>, body: Option<Value>| {
+            let mut b = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::HOST, "blackbox.tail9311b5.ts.net:8768")
+                .header("tailscale-user-login", "raven@github");
+            if let Some(t) = token {
+                b = b.header(header::AUTHORIZATION, format!("Bearer {t}"));
+            }
+            let body = match body {
+                Some(v) => {
+                    b = b.header(header::CONTENT_TYPE, "application/json");
+                    Body::from(v.to_string())
+                }
+                None => Body::empty(),
+            };
+            app.clone().oneshot(b.body(body).unwrap())
+        };
+        let status = |r: Response| r.status();
+        let mk = |name: &str| Some(json!({ "dir": "a", "name": name }));
+
+        assert_eq!(
+            status(call("GET", "/api/roots", None, None).await.unwrap()),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status(call("GET", "/api/roots", Some(&full), None).await.unwrap()),
+            StatusCode::OK
+        );
+        // No CSRF header needed with a bearer token.
+        assert_eq!(
+            status(
+                call("POST", "/api/mkdir", Some(&full), mk("x"))
+                    .await
+                    .unwrap()
+            ),
+            StatusCode::OK
+        );
+        assert!(dir.join("a/x").is_dir());
+        assert_eq!(
+            status(
+                call("GET", "/api/list?path=a", Some(&ro), None)
+                    .await
+                    .unwrap()
+            ),
+            StatusCode::OK
+        );
+        assert_eq!(
+            status(
+                call("POST", "/api/mkdir", Some(&ro), mk("y"))
+                    .await
+                    .unwrap()
+            ),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status(call("GET", "/api/tokens", Some(&full), None).await.unwrap()),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status(call("GET", "/api/samba", Some(&full), None).await.unwrap()),
+            StatusCode::FORBIDDEN
+        );
+        let forged = format!("hd_{}_{}", ro_tok.id, "f".repeat(64));
+        assert_eq!(
+            status(
+                call("GET", "/api/roots", Some(&forged), None)
+                    .await
+                    .unwrap()
+            ),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            state
+                .tokens
+                .list()
+                .iter()
+                .find(|t| t.name == "Pixel")
+                .unwrap()
+                .last_from
+                .as_deref(),
+            Some("raven@github")
+        );
+        state.tokens.revoke(&ro_tok.id).unwrap();
+        assert_eq!(
+            status(call("GET", "/api/roots", Some(&ro), None).await.unwrap()),
+            StatusCode::UNAUTHORIZED
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn theme_events_end_when_the_server_stops() {
         let mut cfg = Config::starter();
         cfg.password_hash = "configured".into();
@@ -1039,6 +1229,7 @@ mod tests {
             thumbs: tokio::sync::Semaphore::new(2),
             stopping: stop_rx,
             sending: Default::default(),
+            tokens: crate::tokens::Store::memory(),
         });
         let res = router(state)
             .oneshot(
@@ -1079,6 +1270,7 @@ mod tests {
             thumbs: tokio::sync::Semaphore::new(2),
             stopping: tokio::sync::watch::channel(false).1,
             sending: Default::default(),
+            tokens: crate::tokens::Store::memory(),
         });
         let app = router(state);
 

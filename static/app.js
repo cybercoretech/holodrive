@@ -240,7 +240,7 @@ async function refreshTrashCount() {
 function markNav() {
   const root = S.path.split("/")[0];
   $$(".drive").forEach((d) => d.classList.toggle("active",
-    (S.route === "trash" && d.dataset.nav === "trash") || (S.route === "samba" && d.dataset.nav === "samba") || (S.route === "browse" || S.route === "search" || S.route === "time") && d.dataset.root === root));
+    (S.route === "trash" && d.dataset.nav === "trash") || (S.route === "samba" && d.dataset.nav === "samba") || (S.route === "devices" && d.dataset.nav === "devices") || (S.route === "browse" || S.route === "search" || S.route === "time") && d.dataset.root === root));
 }
 
 // ── routing ────────────────────────────────────────────────────────────
@@ -252,6 +252,7 @@ async function route() {
   const parts = pathPart.split("/").filter(Boolean);
   if (parts[0] === "trash") return showTrash();
   if (parts[0] === "samba") return showSamba();
+  if (parts[0] === "devices") return showDevices();
   if (parts[0] === "time" && parts.length > 2) return showTime(parts[1], decPath(parts.slice(2).join("/")));
   if (parts[0] === "search") {
     const q = new URLSearchParams(query || "").get("q") || "";
@@ -287,6 +288,7 @@ async function refresh() {
   else if (S.route === "trash") await showTrash();
   else if (S.route === "search") await showSearch(S.path, S.search);
   else if (S.route === "samba") await showSamba();
+  else if (S.route === "devices") await showDevices();
   else if (S.route === "time") await showTime(S.snap, S.path);
   loadRoots().catch(() => {});
   refreshTrashCount();
@@ -416,7 +418,7 @@ function paintSel() {
 }
 function updateSelbar() {
   const n = S.sel.size;
-  $("#selbar").hidden = n === 0 || S.route === "trash" || S.route === "samba" || S.route === "time";
+  $("#selbar").hidden = n === 0 || S.route === "trash" || S.route === "samba" || S.route === "devices" || S.route === "time";
   if (!n) return;
   const sel = selected();
   const bytes = sel.reduce((a, e) => a + (e.kind === "file" ? e.size : 0), 0);
@@ -1471,6 +1473,64 @@ function confGui(textOverride) {
   }).catch(fail);
 }
 
+// ── devices (bearer tokens for the Android app, CLI and scripts) ──────
+async function showDevices() {
+  S.route = "devices"; S.sel.clear(); updateSelbar();
+  $("#crumbs").replaceChildren(h("span", { class: "crumb last", text: "📲 Devices" }));
+  $("#toolbar").hidden = true; markNav();
+  const view = $("#view");
+  let list;
+  try { list = (await api("GET", "/api/tokens")).tokens; } catch (e) { view.replaceChildren(h("div", { class: "empty", text: e.message })); return; }
+  if (S.route !== "devices") return;
+  $("#dev-count").textContent = list.length ? String(list.length) : "";
+  const actions = h("div", { class: "smb-actions" },
+    h("button", { class: "btn btn-primary", type: "button", text: "➕ Add device", onclick: addDevice }),
+    h("span", { class: "grow" }),
+    h("span", { class: "muted", text: "apps send Authorization: Bearer <token> · no CSRF · revocable" }));
+  const grid = h("div", { class: "smb-grid" });
+  for (const t of list) {
+    grid.append(h("div", { class: "smb-card" + (t.read_only ? " ro" : "") },
+      h("div", { class: "smb-head" },
+        h("span", { class: "smb-icon emoji", text: "📲" }),
+        h("div", { style: { minWidth: 0 } }, h("div", { class: "smb-name", text: t.name }), h("div", { class: "smb-comment", text: "id " + t.id }))),
+      h("div", { class: "smb-path", text: t.last_used ? `last used ${fmtDate(t.last_used)}${t.last_from ? " · " + t.last_from : ""}` : "never used yet" }),
+      h("div", { class: "badges" },
+        h("span", { class: "badge " + (t.read_only ? "ro" : "rw"), text: t.read_only ? "read-only" : "full access" }),
+        h("span", { class: "badge", text: "added " + fmtDate(t.created) })),
+      h("div", { class: "smb-buttons" },
+        h("button", { class: "btn btn-danger", type: "button", text: "⛔ Revoke", onclick: async () => {
+          if (!await confirmBox(`Revoke ${t.name}?`, "That device is signed out at once and needs a new token to come back.", "Revoke", true)) return;
+          try { await api("POST", "/api/tokens/revoke", { id: t.id }); toast(`⛔ ${t.name} revoked`, "ok"); showDevices(); } catch (e) { fail(e); }
+        } }))));
+  }
+  const parts = [actions];
+  if (!list.length) parts.push(h("div", { class: "notice" },
+    h("strong", { text: "No devices yet" }),
+    h("span", { text: "Give the Android app, a script or another computer its own token instead of the password. Each one can be read-only and revoked on its own. From a terminal: " }),
+    h("code", { text: "holodrive token add <name> [--read-only]" })));
+  else parts.push(h("div", { class: "section-title", text: "devices" }), grid);
+  view.replaceChildren(...parts);
+}
+function addDevice() {
+  const name = h("input", { class: "text-input", placeholder: "Pixel 9", spellcheck: "false", maxlength: "64" });
+  const { row: roRow, input: ro } = switchRow("Read-only", "can browse and download, can't change anything", false);
+  const create = async () => {
+    const n = name.value.trim(); if (!n) { name.focus(); return; }
+    let t;
+    try { t = await api("POST", "/api/tokens", { name: n, read_only: ro.checked }); } catch (e) { fail(e); return; }
+    modal(`Token for ${t.name}`, h("div", { class: "field" },
+      h("span", { class: "field-label", text: "copy it now; it's shown only once" }),
+      h("code", { class: "token-secret", text: t.token }),
+      h("span", { class: "muted", text: `Server: ${location.origin} · ${t.read_only ? "read-only" : "full access"}` })),
+    [h("button", { class: "btn", type: "button", text: "📋 Copy token", onclick: () => copyText(t.token, "token") }),
+      h("button", { class: "btn btn-primary", type: "button", text: "Done", onclick: () => { closeModal(); showDevices(); } })]);
+  };
+  const form = h("form", { class: "field", onsubmit: (ev) => { ev.preventDefault(); create(); } },
+    h("span", { class: "field-label", text: "device name" }), name, roRow);
+  modal("Add device", form, [h("button", { class: "btn", type: "button", text: "Cancel", onclick: closeModal }),
+    h("button", { class: "btn btn-primary", type: "button", text: "Create token", onclick: create })]);
+}
+
 async function showSamba() {
   S.route = "samba"; S.sel.clear(); updateSelbar();
   $("#crumbs").replaceChildren(h("span", { class: "crumb last", text: "🔌 Samba shares" }));
@@ -1612,7 +1672,7 @@ const CMDS = [
   ["rm", "<name>…", "move to trash (undoable)"], ["mv", "<name> <new name | folder>", "rename or move"],
   ["cp", "<name> <folder>", "copy into a folder"], ["find", "<text>", "search this drive"],
   ["share", "[name]", "share this folder over Samba"], ["time", "", "time machine for this folder"],
-  ["theme", "<name>", "switch theme on this device"], ["samba", "", "open the Samba panel"],
+  ["theme", "<name>", "switch theme on this device"], ["samba", "", "open the Samba panel"], ["devices", "", "device tokens for apps and scripts"],
   ["upload", "", "open the upload panel"], ["help", "", "list commands"],
 ];
 const CMD_ALIAS = { md: "mkdir", edit: "e", del: "rm", move: "mv", copy: "cp", f: "find", tm: "time", h: "help", u: "upload", "?": "help" };
@@ -1748,6 +1808,7 @@ async function cmdRun(line) {
     case "share": return shareDialog(null, { name: (args[0] || baseName(S.path)).replace(/[^A-Za-z0-9_-]+/g, "-").slice(0, 40), path: S.path });
     case "time": return enterTime();
     case "samba": location.hash = "#/samba"; return;
+    case "devices": location.hash = "#/devices"; return;
     case "upload": if (!live) throw new Error("not here"); return openUploadPanel(S.path);
     case "theme": {
       need(1, "<name>");
