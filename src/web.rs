@@ -14,7 +14,7 @@
 use crate::auth::{self, Auth, LoginBrake};
 use crate::config::Config;
 use crate::fsops::{self, FsError};
-use crate::{cybergrid, media, samba, smbconf, snapshots, tokens, uploads, views};
+use crate::{cybergrid, links, media, samba, smbconf, snapshots, tokens, uploads, views};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
@@ -40,6 +40,7 @@ pub struct AppState {
     /// Resumable uploads with a chunk being written right now.
     pub sending: std::sync::Mutex<std::collections::HashSet<String>>,
     pub tokens: tokens::Store,
+    pub links: links::Store,
 }
 
 type Shared = Arc<AppState>;
@@ -100,6 +101,18 @@ pub fn router(state: Shared) -> Router {
         .route("/api/upload/cancel", post(upload_cancel))
         .route("/api/tokens", get(tokens_list).post(tokens_create))
         .route("/api/tokens/revoke", post(tokens_revoke))
+        .route("/api/links", get(links_list).post(links_create))
+        .route("/api/links/revoke", post(links_revoke))
+        .route("/s/:key", get(link_page))
+        .route("/api/s/:key", get(link_info))
+        .route("/api/s/:key/unlock", post(link_unlock))
+        .route("/api/s/:key/list", get(link_list))
+        .route("/api/s/:key/raw", get(link_raw))
+        .route("/api/s/:key/zip", get(link_zip))
+        .route(
+            "/api/s/:key/upload",
+            post(link_upload).layer(DefaultBodyLimit::disable()),
+        )
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
 }
@@ -150,7 +163,7 @@ fn origin_label(req: &Request) -> String {
 }
 
 /// Only a browser session (or this PC) may manage Samba and device tokens.
-const SESSION_ONLY: &[&str] = &["/api/samba", "/api/tokens"];
+const SESSION_ONLY: &[&str] = &["/api/samba", "/api/tokens", "/api/links"];
 
 fn session_id(req: &Request) -> Option<String> {
     let cookies = req.headers().get(header::COOKIE)?.to_str().ok()?;
@@ -192,13 +205,15 @@ async fn guard(State(s): State<Shared>, req: Request, next: Next) -> Response {
     }
     let public = !path.starts_with("/api/")
         || PUBLIC_API.contains(&path.as_str())
-        || path.starts_with("/api/cybergrid/css/");
+        || path.starts_with("/api/cybergrid/css/")
+        // Share links check their own key, expiry and password.
+        || path.starts_with("/api/s/");
     if !public && let Some(secret) = bearer(&req) {
         let Some(grant) = s.tokens.verify(secret, &origin_label(&req)) else {
             return err(401, "unknown or revoked device token");
         };
         if SESSION_ONLY.iter().any(|p| path.starts_with(p)) {
-            return err(403, "device tokens can't manage Samba or tokens");
+            return err(403, "device tokens can't manage Samba, tokens or links");
         }
         if mutating && grant.read_only {
             return err(403, format!("the token for {} is read-only", grant.name));
@@ -591,10 +606,13 @@ async fn zip(State(s): State<Shared>, req: Request) -> Response {
         .filter_map(|kv| kv.strip_prefix("p="))
         .map(unpct)
         .collect();
+    zip_reply(s.cfg.clone(), paths).await
+}
+
+async fn zip_reply(cfg: Arc<Config>, paths: Vec<String>) -> Response {
     if paths.is_empty() {
         return err(400, "nothing to zip");
     }
-    let cfg = s.cfg.clone();
     let names = paths.clone();
     let built = blocking(move || {
         let abs: Vec<_> = names
@@ -785,9 +803,17 @@ struct UploadQ {
 /// The body is the raw file. It streams to a hidden temp file next to the
 /// target and is renamed into place only when complete.
 async fn upload(State(s): State<Shared>, Query(q): Query<UploadQ>, body: Body) -> Response {
-    let cfg = s.cfg.clone();
-    let overwrite = q.overwrite.is_some();
-    let target = blocking(move || fsops::upload_target(&cfg, &q.dir, &q.name, overwrite)).await;
+    store_upload(s.cfg.clone(), q.dir, q.name, q.overwrite.is_some(), body).await
+}
+
+async fn store_upload(
+    cfg: Arc<Config>,
+    dir: String,
+    name: String,
+    overwrite: bool,
+    body: Body,
+) -> Response {
+    let target = blocking(move || fsops::upload_target(&cfg, &dir, &name, overwrite)).await;
     let (path, vpath) = match target {
         Ok(t) => t,
         Err(r) => return r,
@@ -985,6 +1011,282 @@ async fn tokens_revoke(State(s): State<Shared>, Json(b): Json<IdQ>) -> Response 
     }
 }
 
+// ── share links ─────────────────────────────────────────────────────────
+
+/// The address to hand out: the first tailnet name, else wherever the
+/// owner is looking from.
+fn link_base(s: &AppState) -> Option<String> {
+    s.cfg.hosts.first().map(|h| format!("http://{h}"))
+}
+
+async fn links_list(State(s): State<Shared>) -> Json<Value> {
+    let list: Vec<Value> = s.links.list().iter().map(|l| l.public()).collect();
+    Json(json!({ "links": list, "base": link_base(&s) }))
+}
+
+async fn links_create(State(s): State<Shared>, Json(b): Json<links::NewLink>) -> Response {
+    let st = s.clone();
+    match blocking(move || st.links.create(&st.cfg, b)).await {
+        Ok(l) => {
+            let mut v = l.public();
+            v["base"] = json!(link_base(&s));
+            Json(v).into_response()
+        }
+        Err(r) => r,
+    }
+}
+
+#[derive(Deserialize)]
+struct KeyBody {
+    key: String,
+}
+
+async fn links_revoke(State(s): State<Shared>, Json(b): Json<KeyBody>) -> Response {
+    match s.links.revoke(&b.key) {
+        Ok(true) => Json(json!({ "ok": true })).into_response(),
+        Ok(false) => err(404, "no such link"),
+        Err(e) => err(500, e),
+    }
+}
+
+async fn link_page() -> Html<&'static str> {
+    Html(views::LINK_PAGE)
+}
+
+const LINK_COOKIE: &str = "holodrive_link";
+
+/// The link behind a public request, if it's live and (when it has a
+/// password) unlocked in this browser.
+#[allow(clippy::result_large_err)]
+fn open_link(
+    s: &AppState,
+    key: &str,
+    req_headers: &axum::http::HeaderMap,
+) -> Result<links::Link, Response> {
+    let Some(link) = s.links.get(key) else {
+        return Err(err(404, "this link doesn't exist or was revoked"));
+    };
+    if link.expired() {
+        return Err(err(410, "this link has expired"));
+    }
+    if link.has_password() {
+        let grant = req_headers
+            .get(header::COOKIE)
+            .and_then(|c| c.to_str().ok())
+            .and_then(|c| auth::cookie_value(c, LINK_COOKIE));
+        if !grant.is_some_and(|g| s.links.granted(key, g)) {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "this link needs its password", "locked": true })),
+            )
+                .into_response());
+        }
+    }
+    Ok(link)
+}
+
+async fn link_info(State(s): State<Shared>, Path(key): Path<String>, req: Request) -> Response {
+    let link = match open_link(&s, &key, req.headers()) {
+        Ok(l) => l,
+        Err(r) if r.status() == StatusCode::UNAUTHORIZED => {
+            // Say only that it exists and needs a password.
+            return Json(json!({ "locked": true })).into_response();
+        }
+        Err(r) => return r,
+    };
+    let size = if link.dir {
+        None
+    } else {
+        let cfg = s.cfg.clone();
+        let path = link.path.clone();
+        blocking(move || Ok(std::fs::metadata(fsops::resolve(&cfg, &path)?.abs)?.len()))
+            .await
+            .ok()
+    };
+    Json(json!({
+        "locked": false,
+        "name": link.name(),
+        "dir": link.dir,
+        "mode": link.mode,
+        "label": link.label,
+        "expires": link.expires,
+        "size": size,
+        "downloads_left": link.max_downloads.map(|m| m.saturating_sub(link.downloads)),
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct PasswordBody {
+    password: String,
+}
+
+async fn link_unlock(
+    State(s): State<Shared>,
+    Path(key): Path<String>,
+    Json(b): Json<PasswordBody>,
+) -> Response {
+    let st = s.clone();
+    let k = key.clone();
+    let result = tokio::task::spawn_blocking(move || st.links.unlock(&k, &b.password)).await;
+    match result {
+        Ok(links::Unlock::Granted(grant)) => {
+            let cookie = format!(
+                "{LINK_COOKIE}={grant}; HttpOnly; SameSite=Strict; Path=/api/s/{key}; Max-Age={}",
+                links::GRANT_SECS
+            );
+            ([(header::SET_COOKIE, cookie)], Json(json!({ "ok": true }))).into_response()
+        }
+        Ok(links::Unlock::Wrong) => err(401, "wrong password"),
+        Ok(links::Unlock::Wait(d)) => err(
+            429,
+            format!("too many tries; wait {} min", d.as_secs().div_ceil(60)),
+        ),
+        Err(e) => err(500, e),
+    }
+}
+
+#[derive(Deserialize)]
+struct SubQ {
+    #[serde(default)]
+    p: String,
+    #[serde(default)]
+    dl: Option<String>,
+}
+
+#[allow(clippy::result_large_err)]
+fn viewable(
+    s: &AppState,
+    key: &str,
+    headers: &axum::http::HeaderMap,
+) -> Result<links::Link, Response> {
+    let link = open_link(s, key, headers)?;
+    if link.mode != links::Mode::View {
+        return Err(err(403, "this is a drop box: you can upload, not look"));
+    }
+    Ok(link)
+}
+
+async fn link_list(
+    State(s): State<Shared>,
+    Path(key): Path<String>,
+    Query(q): Query<SubQ>,
+    req: Request,
+) -> Response {
+    let link = match viewable(&s, &key, req.headers()) {
+        Ok(l) => l,
+        Err(r) => return r,
+    };
+    let cfg = s.cfg.clone();
+    reply!(blocking(move || {
+        let v = fsops::list(&cfg, &link.target(&q.p)?)?;
+        // Names and sizes only: no drive ids, real paths or modes.
+        let entries: Vec<Value> = v["entries"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|e| e["escapes"] != json!(true))
+            .map(|e| {
+                json!({
+                    "name": e["name"], "kind": e["kind"], "size": e["size"],
+                    "mtime": e["mtime"], "ext": e["ext"], "mime": e["mime"],
+                })
+            })
+            .collect();
+        Ok(json!({ "entries": entries }))
+    }))
+}
+
+/// A whole-file download (not a later range of a video being streamed).
+fn starts_download(req: &Request, dl: bool) -> bool {
+    dl || req
+        .headers()
+        .get(header::RANGE)
+        .and_then(|r| r.to_str().ok())
+        .is_none_or(|r| r.trim() == "bytes=0-")
+}
+
+async fn link_raw(
+    State(s): State<Shared>,
+    Path(key): Path<String>,
+    Query(q): Query<SubQ>,
+    req: Request,
+) -> Response {
+    let link = match viewable(&s, &key, req.headers()) {
+        Ok(l) => l,
+        Err(r) => return r,
+    };
+    let cfg = s.cfg.clone();
+    let sub = q.p.clone();
+    let abs = match blocking(move || {
+        let r = fsops::resolve(&cfg, &link.target(&sub)?)?;
+        if !r.abs.is_file() {
+            return Err(FsError(400, "not a file".into()));
+        }
+        Ok(r.abs)
+    })
+    .await
+    {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let dl = q.dl.is_some();
+    if starts_download(&req, dl) && !s.links.take_download(&key) {
+        return err(410, "this link has no downloads left");
+    }
+    serve_file(abs, dl, req).await
+}
+
+async fn link_zip(
+    State(s): State<Shared>,
+    Path(key): Path<String>,
+    Query(q): Query<SubQ>,
+    req: Request,
+) -> Response {
+    let link = match viewable(&s, &key, req.headers()) {
+        Ok(l) => l,
+        Err(r) => return r,
+    };
+    let target = match link.target(&q.p) {
+        Ok(t) => t,
+        Err(e) => return fs_err(e),
+    };
+    if !s.links.take_download(&key) {
+        return err(410, "this link has no downloads left");
+    }
+    zip_reply(s.cfg.clone(), vec![target]).await
+}
+
+#[derive(Deserialize)]
+struct DropQ {
+    name: String,
+}
+
+async fn link_upload(
+    State(s): State<Shared>,
+    Path(key): Path<String>,
+    Query(q): Query<DropQ>,
+    req: Request,
+) -> Response {
+    let link = match open_link(&s, &key, req.headers()) {
+        Ok(l) => l,
+        Err(r) => return r,
+    };
+    if link.mode != links::Mode::Drop {
+        return err(403, "this link is for downloading");
+    }
+    if q.name.contains('/') {
+        return err(400, "file names only, no folders");
+    }
+    let resp = store_upload(s.cfg.clone(), link.path, q.name, false, req.into_body()).await;
+    if resp.status().is_success() {
+        s.links.count_upload(&key);
+        // The uploader learns only that it arrived, not where.
+        return Json(json!({ "ok": true })).into_response();
+    }
+    resp
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1020,6 +1322,7 @@ mod tests {
             stopping: tokio::sync::watch::channel(false).1,
             sending: Default::default(),
             tokens: crate::tokens::Store::memory(),
+            links: crate::links::Store::memory(),
         }));
         let call = |method: &str, uri: String, body: Body, json: bool| {
             let mut b = Request::builder()
@@ -1123,6 +1426,7 @@ mod tests {
             stopping: tokio::sync::watch::channel(false).1,
             sending: Default::default(),
             tokens: store,
+            links: crate::links::Store::memory(),
         });
         let app = router(state.clone());
         let call = |method: &str, uri: &str, token: Option<&str>, body: Option<Value>| {
@@ -1217,6 +1521,167 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn share_links_serve_files_drop_boxes_and_passwords() {
+        let dir = std::env::temp_dir().join(format!("holodrive-web-links-{}", auth::random_hex(4)));
+        std::fs::create_dir_all(dir.join("a/inbox")).unwrap();
+        std::fs::write(dir.join("a/inbox/secret.txt"), b"hidden").unwrap();
+        std::fs::write(dir.join("a/song.mp3"), b"la la").unwrap();
+        let mut cfg = Config::starter();
+        cfg.password_hash = "configured".into();
+        cfg.hosts.push("blackbox.tail9311b5.ts.net:8768".into());
+        cfg.roots = vec![crate::config::Root {
+            id: "a".into(),
+            name: "A".into(),
+            path: dir.join("a"),
+            icon: String::new(),
+            writable: true,
+        }];
+        let state = Arc::new(AppState {
+            cfg: Arc::new(cfg),
+            auth: Auth::new(30),
+            port: 8768,
+            thumbs: tokio::sync::Semaphore::new(2),
+            stopping: tokio::sync::watch::channel(false).1,
+            sending: Default::default(),
+            tokens: crate::tokens::Store::memory(),
+            links: crate::links::Store::memory(),
+        });
+        let new = |path: &str, mode| crate::links::NewLink {
+            path: path.into(),
+            mode,
+            days: None,
+            password: None,
+            max_downloads: None,
+            label: None,
+        };
+        let song = state
+            .links
+            .create(
+                &state.cfg,
+                crate::links::NewLink {
+                    max_downloads: Some(1),
+                    ..new("a/song.mp3", crate::links::Mode::View)
+                },
+            )
+            .unwrap();
+        let drop = state
+            .links
+            .create(
+                &state.cfg,
+                crate::links::NewLink {
+                    password: Some("pw".into()),
+                    ..new("a/inbox", crate::links::Mode::Drop)
+                },
+            )
+            .unwrap();
+        let app = router(state.clone());
+        // Nobody signed in: a stranger on the tailnet with only the link.
+        let call = |method: &str, uri: String, cookie: Option<String>, body: Body| {
+            let mut b = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::HOST, "blackbox.tail9311b5.ts.net:8768")
+                .header("tailscale-user-login", "friend@github");
+            if let Some(c) = cookie {
+                b = b.header(header::COOKIE, c);
+            }
+            app.clone().oneshot(b.body(body).unwrap())
+        };
+        let get = |uri: String| call("GET", uri, None, Body::empty());
+
+        assert_eq!(
+            get(format!("/s/{}", song.key)).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let r = get(format!("/api/s/{}/raw?dl=1", song.key)).await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(
+            &axum::body::to_bytes(r.into_body(), 64).await.unwrap()[..],
+            b"la la"
+        );
+        assert_eq!(
+            get(format!("/api/s/{}/raw?dl=1", song.key))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::GONE
+        );
+        assert_eq!(
+            get(format!("/api/s/{}/raw?p=../x", song.key))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            get(format!("/api/s/{}", "0".repeat(32)))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        // The rest of the app stays closed.
+        assert_eq!(
+            get("/api/list?path=a".into()).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+
+        // Drop box: locked until the password; then upload but never list.
+        let up = |cookie| {
+            call(
+                "POST",
+                format!("/api/s/{}/upload?name=hi.txt", drop.key),
+                cookie,
+                Body::from("hey"),
+            )
+        };
+        assert_eq!(up(None).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        let unlock = |pw: &str| {
+            app.clone().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/s/{}/unlock", drop.key))
+                    .header(header::HOST, "blackbox.tail9311b5.ts.net:8768")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(json!({ "password": pw }).to_string()))
+                    .unwrap(),
+            )
+        };
+        assert_eq!(
+            unlock("nope").await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let ok = unlock("pw").await.unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        let set = ok.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(set.contains(&format!("Path=/api/s/{}", drop.key)) && set.contains("HttpOnly"));
+        let cookie = set.split(';').next().unwrap().to_string();
+        assert_eq!(
+            up(Some(cookie.clone())).await.unwrap().status(),
+            StatusCode::OK
+        );
+        assert_eq!(std::fs::read(dir.join("a/inbox/hi.txt")).unwrap(), b"hey");
+        let listed = call(
+            "GET",
+            format!("/api/s/{}/list", drop.key),
+            Some(cookie.clone()),
+            Body::empty(),
+        );
+        assert_eq!(listed.await.unwrap().status(), StatusCode::FORBIDDEN);
+        assert_eq!(state.links.get(&drop.key).unwrap().uploads, 1);
+
+        state.links.revoke(&drop.key).unwrap();
+        assert_eq!(
+            up(Some(cookie)).await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn theme_events_end_when_the_server_stops() {
         let mut cfg = Config::starter();
         cfg.password_hash = "configured".into();
@@ -1230,6 +1695,7 @@ mod tests {
             stopping: stop_rx,
             sending: Default::default(),
             tokens: crate::tokens::Store::memory(),
+            links: crate::links::Store::memory(),
         });
         let res = router(state)
             .oneshot(
@@ -1271,6 +1737,7 @@ mod tests {
             stopping: tokio::sync::watch::channel(false).1,
             sending: Default::default(),
             tokens: crate::tokens::Store::memory(),
+            links: crate::links::Store::memory(),
         });
         let app = router(state);
 

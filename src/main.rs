@@ -7,6 +7,8 @@ mod auth;
 mod config;
 mod cybergrid;
 mod fsops;
+mod jsonfile;
+mod links;
 mod media;
 mod samba;
 mod smbconf;
@@ -207,6 +209,7 @@ async fn serve(path: PathBuf) {
         stopping: stop_rx.clone(),
         sending: Default::default(),
         tokens: tokens::Store::open(tokens::path_for(&path)),
+        links: links::Store::open(links::path_for(&path)),
     });
     let daily = state.cfg.clone();
     tokio::spawn(async move {
