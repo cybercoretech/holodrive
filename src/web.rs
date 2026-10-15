@@ -800,8 +800,8 @@ struct UploadQ {
     overwrite: Option<String>,
 }
 
-/// The body is the raw file. It streams to a hidden temp file next to the
-/// target and is renamed into place only when complete.
+/// The body is the raw file. It streams to a spool file on the same drive
+/// (see `uploads`) and is moved into place only when complete.
 async fn upload(State(s): State<Shared>, Query(q): Query<UploadQ>, body: Body) -> Response {
     store_upload(s.cfg.clone(), q.dir, q.name, q.overwrite.is_some(), body).await
 }
@@ -813,12 +813,16 @@ async fn store_upload(
     overwrite: bool,
     body: Body,
 ) -> Response {
-    let target = blocking(move || fsops::upload_target(&cfg, &dir, &name, overwrite)).await;
-    let (path, vpath) = match target {
+    let target = blocking(move || {
+        let (path, vpath) = fsops::upload_target(&cfg, &dir, &name, overwrite)?;
+        let spool = uploads::spool_path(&cfg, &vpath)?;
+        Ok((path, vpath, spool))
+    })
+    .await;
+    let (path, vpath, tmp) = match target {
         Ok(t) => t,
         Err(r) => return r,
     };
-    let tmp = path.with_file_name(format!(".holodrive-upload-{}", auth::random_hex(6)));
     let result: std::io::Result<u64> = async {
         let mut f = tokio::fs::File::create(&tmp).await?;
         let mut n = 0u64;
@@ -833,17 +837,19 @@ async fn store_upload(
         Ok(n)
     }
     .await;
-    match result {
-        Ok(n) => match tokio::fs::rename(&tmp, &path).await {
-            Ok(()) => Json(json!({ "path": vpath, "size": n })).into_response(),
-            Err(e) => {
-                let _ = tokio::fs::remove_file(&tmp).await;
-                err(500, e)
-            }
-        },
+    let n = match result {
+        Ok(n) => n,
         Err(e) => {
             let _ = tokio::fs::remove_file(&tmp).await;
-            err(500, format!("upload interrupted: {e}"))
+            return err(500, format!("upload interrupted: {e}"));
+        }
+    };
+    let spool = tmp.clone();
+    match blocking(move || uploads::move_into_place(&spool, &path)).await {
+        Ok(()) => Json(json!({ "path": vpath, "size": n })).into_response(),
+        Err(r) => {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            r
         }
     }
 }
