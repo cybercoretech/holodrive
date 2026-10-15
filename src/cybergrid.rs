@@ -17,22 +17,58 @@ use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use crate::web::AppState;
 
+/// How often the one shared poller re-reads the catalog.
+const THEME_POLL: Duration = Duration::from_secs(1);
+
+fn current_revision() -> Option<u64> {
+    catalog().ok().map(|c| c.revision())
+}
+
+/// One poller for every open tab: re-reads the catalog once a second and
+/// publishes its revision when it changes (it used to be a poll per tab,
+/// twice a second). Stops when the server does.
+pub fn watch_revision(
+    mut stopping: tokio::sync::watch::Receiver<bool>,
+) -> tokio::sync::watch::Receiver<Option<u64>> {
+    let (tx, rx) = tokio::sync::watch::channel(current_revision());
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(THEME_POLL) => {}
+                _ = stopping.wait_for(|stop| *stop) => return,
+            }
+            let Ok(rev) = tokio::task::spawn_blocking(current_revision).await else {
+                continue;
+            };
+            tx.send_if_modified(|v| {
+                let changed = rev.is_some() && *v != rev;
+                if changed {
+                    *v = rev;
+                }
+                changed
+            });
+        }
+    });
+    rx
+}
+
 pub async fn theme_events(
     State(s): State<Arc<AppState>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let mut stopping = s.stopping.clone();
-    let events = stream::unfold(None, |last_revision| async move {
+    let mut themes = s.themes.clone();
+    // Tell each new tab the current revision straight away.
+    themes.mark_changed();
+    let events = stream::unfold(themes, |mut themes| async move {
         loop {
-            if let Ok(catalog) = catalog() {
-                let revision = catalog.revision();
-                if last_revision != Some(revision) {
-                    let event = Event::default()
-                        .event("theme-change")
-                        .data(revision.to_string());
-                    return Some((Ok(event), Some(revision)));
-                }
+            themes.changed().await.ok()?;
+            let revision = *themes.borrow_and_update();
+            if let Some(revision) = revision {
+                let event = Event::default()
+                    .event("theme-change")
+                    .data(revision.to_string());
+                return Some((Ok(event), themes));
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
         }
     });
     // The stream never ends on its own; end it when the server stops, or
