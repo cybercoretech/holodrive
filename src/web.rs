@@ -37,6 +37,8 @@ pub struct AppState {
     /// Flips to true when the server starts shutting down, so endless
     /// streams (theme events) end and graceful shutdown can finish.
     pub stopping: tokio::sync::watch::Receiver<bool>,
+    /// The theme catalog's revision (see `cybergrid::watch_revision`).
+    pub themes: tokio::sync::watch::Receiver<Option<u64>>,
     /// Resumable uploads with a chunk being written right now.
     pub sending: std::sync::Mutex<std::collections::HashSet<String>>,
     pub tokens: tokens::Store,
@@ -1320,6 +1322,7 @@ mod tests {
             port: 8768,
             thumbs: tokio::sync::Semaphore::new(2),
             stopping: tokio::sync::watch::channel(false).1,
+            themes: tokio::sync::watch::channel(None).1,
             sending: Default::default(),
             tokens: crate::tokens::Store::memory(),
             links: crate::links::Store::memory(),
@@ -1424,6 +1427,7 @@ mod tests {
             port: 8768,
             thumbs: tokio::sync::Semaphore::new(2),
             stopping: tokio::sync::watch::channel(false).1,
+            themes: tokio::sync::watch::channel(None).1,
             sending: Default::default(),
             tokens: store,
             links: crate::links::Store::memory(),
@@ -1542,6 +1546,7 @@ mod tests {
             port: 8768,
             thumbs: tokio::sync::Semaphore::new(2),
             stopping: tokio::sync::watch::channel(false).1,
+            themes: tokio::sync::watch::channel(None).1,
             sending: Default::default(),
             tokens: crate::tokens::Store::memory(),
             links: crate::links::Store::memory(),
@@ -1682,17 +1687,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn theme_events_end_when_the_server_stops() {
+    async fn theme_events_push_changes_and_end_when_the_server_stops() {
         let mut cfg = Config::starter();
         cfg.password_hash = "configured".into();
         cfg.local_auth_bypass = true;
         let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let (theme_tx, theme_rx) = tokio::sync::watch::channel(Some(7));
         let state = Arc::new(AppState {
             cfg: Arc::new(cfg),
             auth: Auth::new(30),
             port: 8768,
             thumbs: tokio::sync::Semaphore::new(2),
             stopping: stop_rx,
+            themes: theme_rx,
             sending: Default::default(),
             tokens: crate::tokens::Store::memory(),
             links: crate::links::Store::memory(),
@@ -1709,18 +1716,23 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let mut body = res.into_body().into_data_stream();
-        let drain = async {
-            while let Some(chunk) = body.next().await {
-                chunk.unwrap();
-            }
+        let wait = std::time::Duration::from_secs(2);
+        let mut next_text = async || {
+            let chunk = tokio::time::timeout(wait, body.next()).await.ok()??.ok()?;
+            Some(String::from_utf8_lossy(&chunk).into_owned())
         };
-        tokio::pin!(drain);
-        let open = tokio::time::timeout(std::time::Duration::from_millis(300), &mut drain).await;
-        assert!(open.is_err(), "stream ended before shutdown");
+        assert!(
+            next_text().await.unwrap().contains("data: 7"),
+            "current revision on connect"
+        );
+        theme_tx.send(Some(8)).unwrap();
+        assert!(
+            next_text().await.unwrap().contains("data: 8"),
+            "changes are pushed"
+        );
         stop_tx.send(true).unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(2), drain)
-            .await
-            .expect("stream still open after shutdown");
+        let end = tokio::time::timeout(wait, body.next()).await;
+        assert!(end.expect("stream still open after shutdown").is_none());
     }
 
     #[tokio::test]
@@ -1735,6 +1747,7 @@ mod tests {
             port: 8768,
             thumbs: tokio::sync::Semaphore::new(2),
             stopping: tokio::sync::watch::channel(false).1,
+            themes: tokio::sync::watch::channel(None).1,
             sending: Default::default(),
             tokens: crate::tokens::Store::memory(),
             links: crate::links::Store::memory(),

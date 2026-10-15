@@ -207,6 +207,7 @@ async fn serve(path: PathBuf) {
         cfg: Arc::new(cfg),
         thumbs: tokio::sync::Semaphore::new(2),
         stopping: stop_rx.clone(),
+        themes: cybergrid::watch_revision(stop_rx.clone()),
         sending: Default::default(),
         tokens: tokens::Store::open(tokens::path_for(&path)),
         links: links::Store::open(links::path_for(&path)),
