@@ -101,6 +101,8 @@ fn passwd(path: PathBuf) {
     println!("password saved; restart Holodrive to use it (systemctl --user restart holodrive)");
 }
 
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
 #[tokio::main]
 async fn serve(path: PathBuf) {
     let cfg = Config::load(&path).unwrap_or_else(|e| die(format!("{e:#}")));
@@ -118,11 +120,13 @@ async fn serve(path: PathBuf) {
         );
     }
     let listen = cfg.listen.clone();
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let state = Arc::new(web::AppState {
         port: cfg.port(),
         auth: auth::Auth::new(cfg.session_days),
         cfg: Arc::new(cfg),
         thumbs: tokio::sync::Semaphore::new(2),
+        stopping: stop_rx.clone(),
     });
     let daily = state.cfg.clone();
     tokio::spawn(async move {
@@ -138,16 +142,28 @@ async fn serve(path: PathBuf) {
         .await
         .unwrap_or_else(|e| die(format!("can't bind {listen}: {e}")));
     println!("[Holodrive] listening on http://{listen}/");
-    let shutdown = async {
+    let shutdown = async move {
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .expect("signal");
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {}
             _ = term.recv() => {}
         }
+        let _ = stop_tx.send(true);
     };
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
-        .await
-        .expect("server");
+    let server = axum::serve(listener, app).with_graceful_shutdown(shutdown);
+    // Give in-flight requests (downloads, video streams, uploads) a moment to
+    // finish, but never hang the stop: systemd would SIGKILL us after 90 s.
+    let mut stopping = stop_rx;
+    let grace = async move {
+        let _ = stopping.wait_for(|stop| *stop).await;
+        tokio::time::sleep(SHUTDOWN_GRACE).await;
+    };
+    tokio::select! {
+        r = std::future::IntoFuture::into_future(server) => r.expect("server"),
+        _ = grace => eprintln!(
+            "[Holodrive] requests still open after {} s; stopping anyway",
+            SHUTDOWN_GRACE.as_secs()
+        ),
+    }
 }

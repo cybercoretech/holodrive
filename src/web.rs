@@ -34,6 +34,9 @@ pub struct AppState {
     pub auth: Auth,
     pub port: u16,
     pub thumbs: tokio::sync::Semaphore,
+    /// Flips to true when the server starts shutting down, so endless
+    /// streams (theme events) end and graceful shutdown can finish.
+    pub stopping: tokio::sync::watch::Receiver<bool>,
 }
 
 type Shared = Arc<AppState>;
@@ -783,6 +786,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn theme_events_end_when_the_server_stops() {
+        let mut cfg = Config::starter();
+        cfg.password_hash = "configured".into();
+        cfg.local_auth_bypass = true;
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let state = Arc::new(AppState {
+            cfg: Arc::new(cfg),
+            auth: Auth::new(30),
+            port: 8768,
+            thumbs: tokio::sync::Semaphore::new(2),
+            stopping: stop_rx,
+        });
+        let res = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/cybergrid/events")
+                    .header(header::HOST, "127.0.0.1:8768")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let mut body = res.into_body().into_data_stream();
+        let drain = async {
+            while let Some(chunk) = body.next().await {
+                chunk.unwrap();
+            }
+        };
+        tokio::pin!(drain);
+        let open = tokio::time::timeout(std::time::Duration::from_millis(300), &mut drain).await;
+        assert!(open.is_err(), "stream ended before shutdown");
+        stop_tx.send(true).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), drain)
+            .await
+            .expect("stream still open after shutdown");
+    }
+
+    #[tokio::test]
     async fn trusted_local_access_skips_login_but_tailnet_still_requires_it() {
         let mut cfg = Config::starter();
         cfg.password_hash = "configured".into();
@@ -793,6 +835,7 @@ mod tests {
             auth: Auth::new(30),
             port: 8768,
             thumbs: tokio::sync::Semaphore::new(2),
+            stopping: tokio::sync::watch::channel(false).1,
         });
         let app = router(state);
 
