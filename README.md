@@ -23,7 +23,10 @@ Cybercore. One Rust binary, no database, no Node.
   (Ctrl+V a screenshot), or open the upload panel (its own neon drop zone, a
   staged list and a destination picker; the browser's file chooser only opens
   if you ask for it). Parallel uploads with live progress; nothing lands until
-  it's complete; names never clobber (`photo (2).jpg`).
+  it's complete; names never clobber (`photo (2).jpg`). Files over 8 MB go up
+  in **resumable chunks**: a dropped connection or a server restart just
+  retries from where it got to, and after a reload, uploading the same file
+  again picks up where it stopped. Unfinished uploads are cleared after a day.
 - **Edit in place.** A CodeMirror 6 editor with **Vim keys** (`:w`, `:q`,
   `:wq`, `:x`, `jk` = Esc; toggle off for plain keys), syntax highlighting for
   ~30 languages in your theme's colours, search, folding and Ctrl+S. Saves are
@@ -152,6 +155,26 @@ it's given:
 - every new smb.conf passes `testparm` before it replaces the old one, which
   is backed up to `/var/lib/holodrive/smb-backups` (last 20 kept);
 - every change is logged: `journalctl -t holodrive-sambactl`.
+
+## Resumable upload API
+
+For apps and scripts (the web page uses it for big files). All requests need
+a session like any other change (cookie + `X-Holodrive-Csrf`).
+
+| Request | Body | Reply |
+|---|---|---|
+| `POST /api/upload/start` | `{"dir": "shared/videos", "name": "a/b.mp4", "size": 123, "overwrite": false}` | `{"id", "offset": 0, "size", "chunk"}` |
+| `PUT /api/upload/chunk?id=…&offset=N` | the bytes from `N` (any length; `chunk` is the suggested size) | `{"offset", "size"}` |
+| `GET /api/upload/status?id=…` | | `{"offset", "size"}` |
+| `POST /api/upload/finish` | `{"id"}` | `{"path", "size"}` (final name never clobbers unless `overwrite`) |
+| `POST /api/upload/cancel` | `{"id"}` | `{"ok": true}` |
+
+A chunk whose `offset` isn't what the server has gets `409` with the right
+`offset`; a chunk past the announced size gets `413`. Bytes that arrive
+before a connection drops are kept, so after an error ask `status` and
+continue. `start` refuses files bigger than the drive's free space (`507`).
+Data waits in `<drive>/.holodrive-uploads/` (same filesystem, so `finish` is
+a rename) and is removed after a day without progress.
 
 ## Roadmap
 

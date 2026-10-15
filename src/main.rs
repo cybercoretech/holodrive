@@ -11,6 +11,7 @@ mod media;
 mod samba;
 mod smbconf;
 mod snapshots;
+mod uploads;
 mod views;
 mod web;
 
@@ -119,6 +120,10 @@ async fn serve(path: PathBuf) {
             cfg.trash_days
         );
     }
+    let swept = uploads::sweep(&cfg);
+    if swept > 0 {
+        println!("[Holodrive] removed {swept} upload(s) untouched for a day");
+    }
     let listen = cfg.listen.clone();
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let state = Arc::new(web::AppState {
@@ -127,14 +132,18 @@ async fn serve(path: PathBuf) {
         cfg: Arc::new(cfg),
         thumbs: tokio::sync::Semaphore::new(2),
         stopping: stop_rx.clone(),
+        sending: Default::default(),
     });
     let daily = state.cfg.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(86_400)).await;
             let cfg = daily.clone();
-            let _ =
-                tokio::task::spawn_blocking(move || fsops::purge_old(&cfg, cfg.trash_days)).await;
+            let _ = tokio::task::spawn_blocking(move || {
+                fsops::purge_old(&cfg, cfg.trash_days);
+                uploads::sweep(&cfg);
+            })
+            .await;
         }
     });
     let app = web::router(state);

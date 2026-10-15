@@ -863,23 +863,82 @@ function enqueueUploads(files, dir) {
 function updateUploadTitle() {
   $("#uploads-title").textContent = `uploads ${U.done}/${U.total}${U.failed ? ` · ${U.failed} failed` : ""}`;
 }
+function upDone(job) { U.done++; job.item.classList.add("done"); job.bar.style.width = "100%"; job.pct.textContent = "✓ " + fmtSize(job.file.size); }
+function upFail(job, msg) { U.failed++; job.item.classList.add("fail"); job.pct.textContent = "✗ " + msg; }
+function upProgress(job, sent) { const p = job.file.size ? (sent / job.file.size) * 100 : 100; job.bar.style.width = p + "%"; job.pct.textContent = p.toFixed(0) + "%"; }
 function pumpUploads() {
   while (U.active < 3 && U.queue.length) {
     const job = U.queue.shift(); U.active++;
+    const send = job.file.size > CHUNK ? chunkedUpload(job) : wholeUpload(job);
+    send.then(() => upDone(job), (e) => upFail(job, e.message)).finally(() => { U.active--; finishUpload(); });
+  }
+}
+// Small files: one request.
+function wholeUpload(job) {
+  return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `/api/upload?dir=${enc(job.dir)}&name=${enc(job.rel)}`);
     xhr.setRequestHeader("X-Holodrive-Csrf", CSRF || "");
     xhr.setRequestHeader("Content-Type", "application/octet-stream");
-    xhr.upload.onprogress = (ev) => { if (ev.lengthComputable) { const p = (ev.loaded / ev.total) * 100; job.bar.style.width = p + "%"; job.pct.textContent = p.toFixed(0) + "%"; } };
+    xhr.upload.onprogress = (ev) => { if (ev.lengthComputable) upProgress(job, (ev.loaded / ev.total) * job.file.size); };
     xhr.onload = () => {
-      U.active--;
-      if (xhr.status >= 200 && xhr.status < 300) { U.done++; job.item.classList.add("done"); job.bar.style.width = "100%"; job.pct.textContent = "✓ " + fmtSize(job.file.size); }
-      else { U.failed++; job.item.classList.add("fail"); let m = xhr.statusText; try { m = JSON.parse(xhr.responseText).error; } catch { /* plain */ } job.pct.textContent = "✗ " + m; }
-      finishUpload();
+      if (xhr.status >= 200 && xhr.status < 300) return resolve();
+      let m = xhr.statusText; try { m = JSON.parse(xhr.responseText).error; } catch { /* plain */ }
+      reject(new Error(m));
     };
-    xhr.onerror = () => { U.active--; U.failed++; job.item.classList.add("fail"); job.pct.textContent = "✗ network"; finishUpload(); };
+    xhr.onerror = () => reject(new Error("network"));
     xhr.send(job.file);
+  });
+}
+// Big files: resumable chunks. A dropped connection retries from what the
+// server already has; after a reload, uploading the same file again resumes.
+const CHUNK = 8 * 1024 * 1024;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function sendChunk(job, id, offset, blob) {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", `/api/upload/chunk?id=${enc(id)}&offset=${offset}`);
+    xhr.setRequestHeader("X-Holodrive-Csrf", CSRF || "");
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.upload.onprogress = (ev) => upProgress(job, offset + ev.loaded);
+    xhr.onload = () => { let data = {}; try { data = JSON.parse(xhr.responseText); } catch { /* not json */ } resolve({ status: xhr.status, data }); };
+    xhr.onerror = () => resolve({ status: 0, data: {} });
+    xhr.send(blob);
+  });
+}
+async function chunkedUpload(job) {
+  const { file } = job;
+  const key = `holodrive.upload:${job.dir}|${job.rel}|${file.size}|${file.lastModified}`;
+  let id = localStorage.getItem(key), offset = 0, chunk = CHUNK;
+  if (id) {
+    try { offset = (await api("GET", `/api/upload/status?id=${enc(id)}`)).offset; } catch { id = null; }
   }
+  if (!id) {
+    const st = await api("POST", "/api/upload/start", { dir: job.dir, name: job.rel, size: file.size });
+    id = st.id; chunk = st.chunk || CHUNK;
+    localStorage.setItem(key, id);
+  } else if (offset) toast(`↻ resuming ${job.rel} at ${fmtSize(offset)}`);
+  upProgress(job, offset);
+  let tries = 0;
+  while (offset < file.size) {
+    const r = await sendChunk(job, id, offset, file.slice(offset, Math.min(offset + chunk, file.size)));
+    if (r.status === 200) { offset = r.data.offset; tries = 0; continue; }
+    if (r.status === 401) { showLogin(); throw new Error("signed out"); }
+    if (r.status === 409 && typeof r.data.offset === "number") { offset = r.data.offset; continue; }
+    if (r.status >= 400 && r.status < 500 && r.status !== 409) {
+      if (r.status === 404) localStorage.removeItem(key);
+      throw new Error(r.data.error || `HTTP ${r.status}`);
+    }
+    // Network drop, server restart or busy: wait, then ask where it got to.
+    if (++tries > 8) throw new Error("connection lost — upload the same file again to resume");
+    job.pct.textContent = `↻ retry ${tries}…`;
+    await sleep(Math.min(30000, 1000 * 2 ** tries));
+    try { offset = (await api("GET", `/api/upload/status?id=${enc(id)}`)).offset; } catch (e) {
+      if (/unknown or expired/.test(e.message)) { localStorage.removeItem(key); throw e; }
+    }
+  }
+  await api("POST", "/api/upload/finish", { id });
+  localStorage.removeItem(key);
 }
 let refreshTimer = null;
 function finishUpload() {

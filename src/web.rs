@@ -14,13 +14,13 @@
 use crate::auth::{self, Auth, LoginBrake};
 use crate::config::Config;
 use crate::fsops::{self, FsError};
-use crate::{cybergrid, media, samba, smbconf, snapshots, views};
+use crate::{cybergrid, media, samba, smbconf, snapshots, uploads, views};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -37,6 +37,8 @@ pub struct AppState {
     /// Flips to true when the server starts shutting down, so endless
     /// streams (theme events) end and graceful shutdown can finish.
     pub stopping: tokio::sync::watch::Receiver<bool>,
+    /// Resumable uploads with a chunk being written right now.
+    pub sending: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 type Shared = Arc<AppState>;
@@ -87,6 +89,14 @@ pub fn router(state: Shared) -> Router {
             "/api/upload",
             post(upload).layer(DefaultBodyLimit::disable()),
         )
+        .route("/api/upload/start", post(upload_start))
+        .route("/api/upload/status", get(upload_status))
+        .route(
+            "/api/upload/chunk",
+            put(upload_chunk).layer(DefaultBodyLimit::disable()),
+        )
+        .route("/api/upload/finish", post(upload_finish))
+        .route("/api/upload/cancel", post(upload_cancel))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
 }
@@ -772,6 +782,138 @@ async fn upload(State(s): State<Shared>, Query(q): Query<UploadQ>, body: Body) -
     }
 }
 
+#[derive(Deserialize)]
+struct StartBody {
+    dir: String,
+    name: String,
+    size: u64,
+    #[serde(default)]
+    overwrite: bool,
+}
+
+async fn upload_start(State(s): State<Shared>, Json(b): Json<StartBody>) -> Response {
+    let cfg = s.cfg.clone();
+    reply!(blocking(move || uploads::start(
+        &cfg,
+        &b.dir,
+        &b.name,
+        b.size,
+        b.overwrite
+    )))
+}
+
+#[derive(Deserialize)]
+struct IdQ {
+    id: String,
+}
+
+async fn upload_status(State(s): State<Shared>, Query(q): Query<IdQ>) -> Response {
+    let cfg = s.cfg.clone();
+    reply!(blocking(move || uploads::status(&cfg, &q.id)))
+}
+
+async fn upload_finish(State(s): State<Shared>, Json(b): Json<IdQ>) -> Response {
+    let cfg = s.cfg.clone();
+    reply!(blocking(move || uploads::finish(&cfg, &b.id)))
+}
+
+async fn upload_cancel(State(s): State<Shared>, Json(b): Json<IdQ>) -> Response {
+    let cfg = s.cfg.clone();
+    reply!(blocking(move || uploads::cancel(&cfg, &b.id)))
+}
+
+/// Marks an upload as receiving a chunk; one writer per upload at a time.
+struct Sending(Shared, String);
+
+impl Sending {
+    fn claim(s: &Shared, id: &str) -> Option<Sending> {
+        let mut set = s.sending.lock().unwrap_or_else(|e| e.into_inner());
+        set.insert(id.to_string())
+            .then(|| Sending(s.clone(), id.to_string()))
+    }
+}
+
+impl Drop for Sending {
+    fn drop(&mut self) {
+        let mut set = self.0.sending.lock().unwrap_or_else(|e| e.into_inner());
+        set.remove(&self.1);
+    }
+}
+
+#[derive(Deserialize)]
+struct ChunkQ {
+    id: String,
+    offset: u64,
+}
+
+fn at_offset(code: StatusCode, msg: impl ToString, offset: u64) -> Response {
+    (
+        code,
+        Json(json!({ "error": msg.to_string(), "offset": offset })),
+    )
+        .into_response()
+}
+
+/// The body is the next piece of the file, starting at `offset`. Bytes that
+/// arrive before a connection drops are kept; the client asks `status` (or
+/// reads `offset` from a 409) and carries on from there.
+async fn upload_chunk(State(s): State<Shared>, Query(q): Query<ChunkQ>, body: Body) -> Response {
+    let cfg = s.cfg.clone();
+    let id = q.id.clone();
+    let up = match blocking(move || uploads::find(&cfg, &id)).await {
+        Ok(u) => u,
+        Err(r) => return r,
+    };
+    let Some(_sending) = Sending::claim(&s, &q.id) else {
+        return err(409, "this upload is already receiving a chunk");
+    };
+    let have = match tokio::fs::metadata(&up.part).await {
+        Ok(m) => m.len(),
+        Err(e) => return err(500, e),
+    };
+    if have != q.offset {
+        return at_offset(
+            StatusCode::CONFLICT,
+            format!("the server has {have} bytes; continue from there"),
+            have,
+        );
+    }
+    let room = up.size() - have;
+    let mut n = 0u64;
+    let result: std::io::Result<()> = async {
+        let mut f = tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&up.part)
+            .await?;
+        let mut stream = body.into_data_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(std::io::Error::other)?;
+            if n + chunk.len() as u64 > room {
+                f.sync_data().await?;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::FileTooLarge,
+                    "more data than the size given at start",
+                ));
+            }
+            f.write_all(&chunk).await?;
+            n += chunk.len() as u64;
+        }
+        f.sync_data().await
+    }
+    .await;
+    match result {
+        Ok(()) => Json(json!({ "offset": have + n, "size": up.size() })).into_response(),
+        Err(e) if e.kind() == std::io::ErrorKind::FileTooLarge => {
+            at_offset(StatusCode::PAYLOAD_TOO_LARGE, e, have + n)
+        }
+        Err(e) => at_offset(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("chunk interrupted: {e}"),
+            have + n,
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -786,6 +928,105 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn chunked_upload_resumes_and_refuses_bad_offsets() {
+        let dir = std::env::temp_dir().join(format!("holodrive-web-up-{}", auth::random_hex(4)));
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        let mut cfg = Config::starter();
+        cfg.password_hash = "configured".into();
+        cfg.local_auth_bypass = true;
+        cfg.roots = vec![crate::config::Root {
+            id: "a".into(),
+            name: "A".into(),
+            path: dir.join("a"),
+            icon: String::new(),
+            writable: true,
+        }];
+        let app = router(Arc::new(AppState {
+            cfg: Arc::new(cfg),
+            auth: Auth::new(30),
+            port: 8768,
+            thumbs: tokio::sync::Semaphore::new(2),
+            stopping: tokio::sync::watch::channel(false).1,
+            sending: Default::default(),
+        }));
+        let call = |method: &str, uri: String, body: Body, json: bool| {
+            let mut b = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::HOST, "127.0.0.1:8768");
+            if json {
+                b = b.header(header::CONTENT_TYPE, "application/json");
+            }
+            app.clone().oneshot(b.body(body).unwrap())
+        };
+        let read = |r: Response| async move {
+            let status = r.status();
+            let bytes = axum::body::to_bytes(r.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (status, serde_json::from_slice::<Value>(&bytes).unwrap())
+        };
+
+        let start = json!({ "dir": "a", "name": "movie.mkv", "size": 10 }).to_string();
+        let (st, v) = read(
+            call("POST", "/api/upload/start".into(), Body::from(start), true)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        let id = v["id"].as_str().unwrap().to_string();
+        let chunk = |offset: u64, data: &'static [u8]| {
+            call(
+                "PUT",
+                format!("/api/upload/chunk?id={id}&offset={offset}"),
+                Body::from(data),
+                false,
+            )
+        };
+
+        let (st, v) = read(chunk(0, b"01234").await.unwrap()).await;
+        assert_eq!((st, v["offset"].as_u64()), (StatusCode::OK, Some(5)));
+        // A client that lost track (e.g. resent the first chunk) is told where to go on.
+        let (st, v) = read(chunk(0, b"01234").await.unwrap()).await;
+        assert_eq!((st, v["offset"].as_u64()), (StatusCode::CONFLICT, Some(5)));
+        // More than was announced is refused; what fit is kept.
+        let (st, v) = read(chunk(5, b"56789XX").await.unwrap()).await;
+        assert_eq!(st, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(v["offset"].as_u64(), Some(5));
+        let (st, v) = read(
+            call(
+                "GET",
+                format!("/api/upload/status?id={id}"),
+                Body::empty(),
+                false,
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!((st, v["offset"].as_u64()), (StatusCode::OK, Some(5)));
+        let (st, _) = read(chunk(5, b"56789").await.unwrap()).await;
+        assert_eq!(st, StatusCode::OK);
+        let fin = json!({ "id": id }).to_string();
+        let (st, v) = read(
+            call("POST", "/api/upload/finish".into(), Body::from(fin), true)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            (st, v["path"].as_str()),
+            (StatusCode::OK, Some("a/movie.mkv"))
+        );
+        assert_eq!(
+            std::fs::read(dir.join("a/movie.mkv")).unwrap(),
+            b"0123456789"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn theme_events_end_when_the_server_stops() {
         let mut cfg = Config::starter();
         cfg.password_hash = "configured".into();
@@ -797,6 +1038,7 @@ mod tests {
             port: 8768,
             thumbs: tokio::sync::Semaphore::new(2),
             stopping: stop_rx,
+            sending: Default::default(),
         });
         let res = router(state)
             .oneshot(
@@ -836,6 +1078,7 @@ mod tests {
             port: 8768,
             thumbs: tokio::sync::Semaphore::new(2),
             stopping: tokio::sync::watch::channel(false).1,
+            sending: Default::default(),
         });
         let app = router(state);
 
