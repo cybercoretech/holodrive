@@ -157,6 +157,26 @@ it's given:
   is backed up to `/var/lib/holodrive/smb-backups` (last 20 kept);
 - every change is logged: `journalctl -t holodrive-sambactl`.
 
+## Share links
+
+Give someone one file or folder, or a **drop box** to upload into, without
+the Holodrive password: right-click → **Share link…** (or `:link` in a
+folder). Choose an expiry (1 day to never), an optional password, a download
+limit and the title they see. They get `http://<tailnet host>/s/<key>`, a
+small page to preview, browse and download (single files or a zip), or, for
+a drop box, to upload files without seeing what's already there.
+
+- Keys are 128 random bits; links live in `~/.config/holodrive/links.json`
+  (0600), so 🔗 **Share links** can show and copy them again, count downloads
+  and uploads, and revoke them.
+- Passwords are argon2id with their own brake (5 tries / 10 min per link);
+  unlocking sets an HttpOnly cookie scoped to that link for 12 hours.
+- A link reaches only its own file or folder (same path rules as the app:
+  no `..`, no hidden names, no symlinks out). Visitors see names and sizes,
+  never drive ids or real paths. The rest of Holodrive still needs a login.
+- Links work wherever Holodrive is reachable, i.e. your tailnet. Opening
+  them to the internet (Tailscale Funnel) is deliberately not done for you.
+
 ## Devices (tokens for apps and scripts)
 
 The Android app, scripts and other computers can use their own **device
@@ -173,8 +193,8 @@ holodrive token revoke <id>
 Only a SHA-256 of each token is kept (`~/.config/holodrive/tokens.json`,
 mode 0600), and the server picks up changes without a restart. Bearer
 requests need no CSRF token, because browsers never send that header on
-their own. No token can manage Samba or other tokens; that needs a browser
-session.
+their own. No token can manage Samba, tokens or share links; that needs a
+browser session.
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" http://blackbox.tail1234.ts.net:8768/api/roots

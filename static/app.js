@@ -40,6 +40,7 @@ function fmtSize(n) {
 function fmtDate(secs) {
   if (!secs) return "";
   const d = new Date(secs * 1000), now = Date.now(), diff = (now - d) / 1000;
+  if (diff < 0) return d.toISOString().slice(0, 10) + " " + d.toTimeString().slice(0, 5);
   if (diff < 60) return "just now";
   if (diff < 3600) return Math.floor(diff / 60) + " min ago";
   if (diff < 86400 && d.getDate() === new Date().getDate()) return "today " + d.toTimeString().slice(0, 5);
@@ -240,7 +241,7 @@ async function refreshTrashCount() {
 function markNav() {
   const root = S.path.split("/")[0];
   $$(".drive").forEach((d) => d.classList.toggle("active",
-    (S.route === "trash" && d.dataset.nav === "trash") || (S.route === "samba" && d.dataset.nav === "samba") || (S.route === "devices" && d.dataset.nav === "devices") || (S.route === "browse" || S.route === "search" || S.route === "time") && d.dataset.root === root));
+    (S.route === "trash" && d.dataset.nav === "trash") || (S.route === "samba" && d.dataset.nav === "samba") || (S.route === "devices" && d.dataset.nav === "devices") || (S.route === "links" && d.dataset.nav === "links") || (S.route === "browse" || S.route === "search" || S.route === "time") && d.dataset.root === root));
 }
 
 // ── routing ────────────────────────────────────────────────────────────
@@ -253,6 +254,7 @@ async function route() {
   if (parts[0] === "trash") return showTrash();
   if (parts[0] === "samba") return showSamba();
   if (parts[0] === "devices") return showDevices();
+  if (parts[0] === "links") return showLinks();
   if (parts[0] === "time" && parts.length > 2) return showTime(parts[1], decPath(parts.slice(2).join("/")));
   if (parts[0] === "search") {
     const q = new URLSearchParams(query || "").get("q") || "";
@@ -289,6 +291,7 @@ async function refresh() {
   else if (S.route === "search") await showSearch(S.path, S.search);
   else if (S.route === "samba") await showSamba();
   else if (S.route === "devices") await showDevices();
+  else if (S.route === "links") await showLinks();
   else if (S.route === "time") await showTime(S.snap, S.path);
   loadRoots().catch(() => {});
   refreshTrashCount();
@@ -418,7 +421,7 @@ function paintSel() {
 }
 function updateSelbar() {
   const n = S.sel.size;
-  $("#selbar").hidden = n === 0 || S.route === "trash" || S.route === "samba" || S.route === "devices" || S.route === "time";
+  $("#selbar").hidden = n === 0 || S.route === "trash" || S.route === "samba" || S.route === "devices" || S.route === "links" || S.route === "time";
   if (!n) return;
   const sel = selected();
   const bytes = sel.reduce((a, e) => a + (e.kind === "file" ? e.size : 0), 0);
@@ -812,6 +815,7 @@ function itemMenu(x, y) {
     writable && one && { icon: "✏️", label: "Rename", key: "F2", run: () => doRename(one) },
     writable && one && one.kind === "file" && { icon: "🧬", label: "Duplicate", run: () => doTransfer([entryPath(one)], S.path, true) },
     "-",
+    one && S.route === "browse" && { icon: "🔗", label: "Share link…", run: () => linkDialog(one) },
     one && one.kind === "dir" && S.route === "browse" && { icon: "🔌", label: "Share via Samba…", run: () => shareDialog(null, { name: one.name.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40), path: entryPath(one) }) },
     one && S.route !== "time" && { icon: "🔗", label: "Copy Samba path", run: () => { const root = S.roots.find((r) => r.id === entryPath(one).split("/")[0]); copyText(`\\\\${S.session.host}\\${root.name}\\${entryPath(one).split("/").slice(1).join("\\")}`, "Samba path"); } },
     one && one.kind === "file" && S.route === "browse" && { icon: "🕘", label: "Versions…", key: "V", run: () => showVersions(one) },
@@ -1473,6 +1477,81 @@ function confGui(textOverride) {
   }).catch(fail);
 }
 
+// ── share links ────────────────────────────────────────────────────────
+const LINKS = { base: null };
+const linkUrl = (l) => `${l.base || LINKS.base || location.origin}/s/${l.key}`;
+function linkDialog(e) {
+  const path = e.vpath || entryPath(e);
+  const isDir = e.kind === "dir";
+  const mode = h("select", { class: "select" },
+    h("option", { value: "view", text: isDir ? "Browse and download" : "View and download" }),
+    isDir ? h("option", { value: "drop", text: "Drop box (upload only, contents hidden)" }) : null);
+  const days = h("select", { class: "select" },
+    [["1", "1 day"], ["7", "7 days"], ["30", "30 days"], ["0", "never"]].map(([v, t]) => h("option", { value: v, text: t })));
+  days.value = "7";
+  const pw = h("input", { class: "text-input", type: "password", placeholder: "optional", autocomplete: "new-password" });
+  const max = h("input", { class: "text-input", type: "number", min: "1", placeholder: "unlimited" });
+  const label = h("input", { class: "text-input", placeholder: e.name, maxlength: "80" });
+  const row = (l, el) => h("label", { class: "field" }, h("span", { class: "field-label", text: l }), el);
+  const create = async () => {
+    let l;
+    try {
+      l = await api("POST", "/api/links", { path, mode: mode.value, days: +days.value, password: pw.value || null,
+        max_downloads: max.value ? +max.value : null, label: label.value || null });
+    } catch (err) { fail(err); return; }
+    const url = linkUrl(l);
+    modal("Share link ready", h("div", { class: "field" },
+      h("span", { class: "field-label", text: `${l.mode === "drop" ? "drop box" : "link"} for ${l.name}` }),
+      h("code", { class: "token-secret", text: url }),
+      h("span", { class: "muted", text: [l.expires ? "expires " + fmtDate(l.expires) : "never expires", l.password ? "password protected" : null,
+        l.max_downloads ? `${l.max_downloads} download${l.max_downloads > 1 ? "s" : ""}` : null, "works on your tailnet"].filter(Boolean).join(" · ") })),
+    [h("a", { class: "btn", href: "#/links", text: "🔗 All links", onclick: closeModal }),
+      h("button", { class: "btn btn-primary", type: "button", text: "📋 Copy link", onclick: () => { copyText(url, "link"); closeModal(); } })]);
+  };
+  modal(`Share ${e.name}`, h("form", { class: "field", onsubmit: (ev) => { ev.preventDefault(); create(); } },
+    row("access", mode), row("expires", days), row("password", pw), row("max downloads", max), row("title shown to them", label)),
+  [h("button", { class: "btn", type: "button", text: "Cancel", onclick: closeModal }),
+    h("button", { class: "btn btn-primary", type: "button", text: "Create link", onclick: create })]);
+}
+async function showLinks() {
+  S.route = "links"; S.sel.clear(); updateSelbar();
+  $("#crumbs").replaceChildren(h("span", { class: "crumb last", text: "🔗 Share links" }));
+  $("#toolbar").hidden = true; markNav();
+  const view = $("#view");
+  let d;
+  try { d = await api("GET", "/api/links"); } catch (e) { view.replaceChildren(h("div", { class: "empty", text: e.message })); return; }
+  if (S.route !== "links") return;
+  LINKS.base = d.base;
+  $("#link-count").textContent = d.links.length ? String(d.links.length) : "";
+  if (!d.links.length) {
+    view.replaceChildren(h("div", { class: "notice" }, h("strong", { text: "No share links yet" }),
+      h("span", { text: "Right-click a file or folder → Share link… (or :link in a folder) to give someone a download link or a drop box, with an expiry, password or download limit. Links work on your tailnet." })));
+    return;
+  }
+  const grid = h("div", { class: "smb-grid" });
+  for (const l of d.links) {
+    const state = l.expired ? "expired" : l.max_downloads && l.downloads >= l.max_downloads ? "used up" : null;
+    grid.append(h("div", { class: "smb-card" + (state ? " off" : "") },
+      h("div", { class: "smb-head" },
+        h("span", { class: "smb-icon emoji", text: l.mode === "drop" ? "📥" : l.dir ? "📁" : "📄" }),
+        h("div", { style: { minWidth: 0 } }, h("div", { class: "smb-name", text: l.label || l.name }), h("div", { class: "smb-comment", text: l.path }))),
+      h("div", { class: "smb-path", title: linkUrl(l), text: linkUrl(l) }),
+      h("div", { class: "badges" },
+        h("span", { class: "badge " + (l.mode === "drop" ? "ro" : "rw"), text: l.mode === "drop" ? "drop box" : "download" }),
+        state ? h("span", { class: "badge warn", text: state }) : h("span", { class: "badge", text: l.expires ? "until " + fmtDate(l.expires) : "no expiry" }),
+        l.password ? h("span", { class: "badge", text: "🔑 password" }) : null,
+        h("span", { class: "badge", text: l.mode === "drop" ? `${l.uploads} received` : `${l.downloads}${l.max_downloads ? "/" + l.max_downloads : ""} download${(l.max_downloads || l.downloads) === 1 ? "" : "s"}` })),
+      h("div", { class: "smb-buttons" },
+        h("button", { class: "btn", type: "button", text: "📋 Copy", onclick: () => copyText(linkUrl(l), "link") }),
+        h("a", { class: "btn", href: "#/browse/" + encPath(l.dir ? l.path : l.path.split("/").slice(0, -1).join("/")), text: "📂 Open" }),
+        h("button", { class: "btn btn-danger", type: "button", text: "⛔ Revoke", onclick: async () => {
+          if (!await confirmBox("Revoke this link?", "Anyone holding it gets “link unavailable” from now on.", "Revoke", true)) return;
+          try { await api("POST", "/api/links/revoke", { key: l.key }); toast("⛔ link revoked", "ok"); showLinks(); } catch (e) { fail(e); }
+        } }))));
+  }
+  view.replaceChildren(h("div", { class: "section-title", text: "share links" }), grid);
+}
+
 // ── devices (bearer tokens for the Android app, CLI and scripts) ──────
 async function showDevices() {
   S.route = "devices"; S.sel.clear(); updateSelbar();
@@ -1672,7 +1751,7 @@ const CMDS = [
   ["rm", "<name>…", "move to trash (undoable)"], ["mv", "<name> <new name | folder>", "rename or move"],
   ["cp", "<name> <folder>", "copy into a folder"], ["find", "<text>", "search this drive"],
   ["share", "[name]", "share this folder over Samba"], ["time", "", "time machine for this folder"],
-  ["theme", "<name>", "switch theme on this device"], ["samba", "", "open the Samba panel"], ["devices", "", "device tokens for apps and scripts"],
+  ["theme", "<name>", "switch theme on this device"], ["samba", "", "open the Samba panel"], ["devices", "", "device tokens for apps and scripts"], ["link", "[name]", "share link for an item (or this folder)"], ["links", "", "your share links"],
   ["upload", "", "open the upload panel"], ["help", "", "list commands"],
 ];
 const CMD_ALIAS = { md: "mkdir", edit: "e", del: "rm", move: "mv", copy: "cp", f: "find", tm: "time", h: "help", u: "upload", "?": "help" };
@@ -1809,6 +1888,13 @@ async function cmdRun(line) {
     case "time": return enterTime();
     case "samba": location.hash = "#/samba"; return;
     case "devices": location.hash = "#/devices"; return;
+    case "links": location.hash = "#/links"; return;
+    case "link": {
+      const name = args.join(" ");
+      const e = name ? entryByName(name) : null;
+      if (name && !e) throw new Error(`no ${name} here`);
+      return linkDialog(e || { name: baseName(S.path), kind: "dir", vpath: S.path });
+    }
     case "upload": if (!live) throw new Error("not here"); return openUploadPanel(S.path);
     case "theme": {
       need(1, "<name>");

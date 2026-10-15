@@ -2,9 +2,11 @@
 //! first paint is app.js talking to the JSON API.
 
 pub const PAGE: &str = include_str!("../static/index.html");
+pub const LINK_PAGE: &str = include_str!("../static/link.html");
 
 const UI_CSS: &str = include_str!("../static/ui.css");
 const APP_JS: &str = include_str!("../static/app.js");
+const LINK_JS: &str = include_str!("../static/link.js");
 const FAVICON: &str = include_str!("../static/favicon.svg");
 const LOGO: &str = include_str!("../static/holocube.svg");
 /// CodeMirror 6 + Vim, pre-gzipped (`editor/build.sh`); loaded only when editing.
@@ -17,6 +19,7 @@ pub fn asset(file: &str) -> Option<(&'static [u8], &'static str)> {
     Some(match file {
         "ui.css" => (UI_CSS.as_bytes(), "text/css; charset=utf-8"),
         "app.js" => (APP_JS.as_bytes(), "text/javascript; charset=utf-8"),
+        "link.js" => (LINK_JS.as_bytes(), "text/javascript; charset=utf-8"),
         "favicon.svg" => (FAVICON.as_bytes(), "image/svg+xml"),
         "holocube.svg" => (LOGO.as_bytes(), "image/svg+xml"),
         _ => return None,
