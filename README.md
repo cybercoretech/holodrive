@@ -76,7 +76,8 @@ Cybercore. One Rust binary, no database, no Node.
 
 - Listens on **127.0.0.1** only. `tailscale serve` publishes it to your tailnet
   (WireGuard-encrypted); nothing is opened to the LAN or the internet.
-- **One password**, stored as an argon2id hash. A login sets an HttpOnly,
+- **One password**, stored as an argon2id hash (apps and scripts use
+  revocable device tokens instead; see *Devices*). A login sets an HttpOnly,
   SameSite=Strict session cookie; every change also needs the session's CSRF
   token and an allowed Origin. Only known `Host` names are accepted (DNS
   rebinding). Five wrong passwords in ten minutes pause logins.
@@ -156,10 +157,34 @@ it's given:
   is backed up to `/var/lib/holodrive/smb-backups` (last 20 kept);
 - every change is logged: `journalctl -t holodrive-sambactl`.
 
+## Devices (tokens for apps and scripts)
+
+The Android app, scripts and other computers can use their own **device
+token** instead of the password: `Authorization: Bearer hd_…`. Each token can
+be **read-only** and revoked on its own, and shows when and from where it was
+last used. Make them on the 📲 **Devices** page or in a terminal:
+
+```sh
+holodrive token add "Pixel 9" [--read-only]   # prints the token once
+holodrive token list
+holodrive token revoke <id>
+```
+
+Only a SHA-256 of each token is kept (`~/.config/holodrive/tokens.json`,
+mode 0600), and the server picks up changes without a restart. Bearer
+requests need no CSRF token, because browsers never send that header on
+their own. No token can manage Samba or other tokens; that needs a browser
+session.
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" http://blackbox.tail1234.ts.net:8768/api/roots
+```
+
 ## Resumable upload API
 
-For apps and scripts (the web page uses it for big files). All requests need
-a session like any other change (cookie + `X-Holodrive-Csrf`).
+For apps and scripts (the web page uses it for big files). Send a device
+token (`Authorization: Bearer …`), or use a browser session (cookie +
+`X-Holodrive-Csrf`).
 
 | Request | Body | Reply |
 |---|---|---|

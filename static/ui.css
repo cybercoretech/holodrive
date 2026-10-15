@@ -588,3 +588,4 @@ body.time-travel .view .tile, body.time-travel .view .row:not(.head) { filter: s
 .cmd-opt b { color: var(--cyan); min-width: 12ch; }
 .cmd-opt span { color: var(--muted); }
 .cmd-opt.on, .cmd-opt:hover { background: color-mix(in srgb, var(--pink) 18%, transparent); }
+.token-secret { display: block; user-select: all; word-break: break-all; padding: 10px 12px; margin: 6px 0; border: 1px solid var(--line); border-radius: var(--hd-radius); background: var(--glass-strong); font-size: 13px; }
