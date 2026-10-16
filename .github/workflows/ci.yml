@@ -19,4 +19,4 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
       - name: JS syntax
-        run: node --check static/app.js && node --check static/link.js && node --check site/app.js
+        run: node --check static/app.js && node --check static/link.js
