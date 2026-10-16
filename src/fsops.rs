@@ -533,6 +533,70 @@ pub fn search(cfg: &Config, vpath: &str, query: &str) -> FsResult<Value> {
     Ok(json!({ "results": results, "truncated": truncated }))
 }
 
+/// Find raster photos below a shared folder for the dedicated photo library.
+/// The scan is bounded so a large drive cannot monopolize a blocking worker.
+pub fn photos(cfg: &Config, vpath: &str) -> FsResult<Value> {
+    const MAX_RESULTS: usize = 2_000;
+    const MAX_SCANNED: usize = 400_000;
+    let r = resolve(cfg, vpath)?;
+    if !std::fs::metadata(&r.abs)?.is_dir() {
+        return Err(FsError::bad("not a folder"));
+    }
+    let root_real = r.root.path.canonicalize()?;
+    let started = std::time::Instant::now();
+    let mut recent = std::collections::BTreeMap::new();
+    let mut scanned = 0usize;
+    let mut found = 0usize;
+    let mut truncated = false;
+    let walker = walkdir::WalkDir::new(&r.abs)
+        .min_depth(1)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| !e.file_name().to_string_lossy().starts_with('.'));
+    for entry in walker.flatten() {
+        scanned += 1;
+        if scanned > MAX_SCANNED || started.elapsed() > Duration::from_secs(6) {
+            truncated = true;
+            break;
+        }
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let ext = entry
+            .path()
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        if !crate::media::is_image(&ext) {
+            continue;
+        }
+        let Some(item) = entry_for(&root_real, entry.path(), name) else {
+            continue;
+        };
+        if item.escapes || item.link {
+            continue;
+        }
+        let Ok(rel) = entry.path().strip_prefix(&r.root.path) else {
+            continue;
+        };
+        let path = join_vpath(&r.root.id, rel);
+        let key = (item.mtime, path.clone());
+        let mut value = serde_json::to_value(item).unwrap_or_default();
+        value["path"] = json!(path);
+        recent.insert(key, value);
+        found += 1;
+        if recent.len() > MAX_RESULTS {
+            recent.pop_first();
+        }
+    }
+    let clipped = found > MAX_RESULTS;
+    let results: Vec<_> = recent.into_iter().rev().map(|(_, item)| item).collect();
+    Ok(
+        json!({ "path": r.vpath(), "results": results, "truncated": truncated || clipped, "scanned": scanned }),
+    )
+}
+
 pub fn read_text(cfg: &Config, vpath: &str) -> FsResult<Value> {
     let r = resolve(cfg, vpath)?;
     let meta = std::fs::metadata(&r.abs)?;
@@ -701,6 +765,25 @@ mod tests {
             403
         );
         assert!(transfer(&c, &["ro/r.txt".into()], "a", true).is_ok());
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn photos_scan_is_recursive_and_skips_hidden_and_symlinks() {
+        let d = scratch("photos");
+        let c = cfg(&d);
+        std::fs::write(d.join("a/sub/vacation.jpg"), b"photo").unwrap();
+        std::fs::write(d.join("a/sub/readme.txt"), b"text").unwrap();
+        std::fs::write(d.join("outside/secret.png"), b"outside").unwrap();
+        std::os::unix::fs::symlink(d.join("outside/secret.png"), d.join("a/sub/linked.png"))
+            .unwrap();
+
+        let page = photos(&c, "a").unwrap();
+        let results = page["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["path"], "a/sub/vacation.jpg");
+        assert_eq!(page["truncated"], false);
+
         std::fs::remove_dir_all(d).unwrap();
     }
 

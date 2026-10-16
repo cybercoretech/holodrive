@@ -248,6 +248,24 @@ body:not(.booting) .boot { opacity: 0; visibility: hidden; }
 .tile.sel .tile-check { background: var(--pink); border-color: var(--pink); color: var(--bg); }
 .tile-badge { position: absolute; top: 7px; right: 7px; font-size: 11px; }
 
+/* Dedicated cloud photo library */
+.photo-library { display: grid; gap: 26px; }
+.photo-year-group { min-width: 0; }
+.photo-year { margin: 0 0 10px; color: var(--fg); font-size: 20px; letter-spacing: .04em; }
+.photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 10px; }
+.photo-tile { position: relative; min-width: 0; padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--fg); cursor: pointer; text-align: left; }
+.photo-tile:hover { border-color: var(--cyan); box-shadow: 0 0 18px color-mix(in srgb, var(--cyan) 25%, transparent); transform: translateY(-2px); }
+.photo-tile.sel { border-color: var(--pink); box-shadow: 0 0 18px color-mix(in srgb, var(--pink) 30%, transparent); }
+.photo-art { display: grid; place-items: center; aspect-ratio: 1; background: color-mix(in srgb, var(--panel) 75%, var(--bg)); overflow: hidden; }
+.photo-art img { width: 100%; height: 100%; object-fit: cover; }
+.photo-art .big-emoji { font-size: 42px; }
+.photo-name, .photo-date { display: block; overflow: hidden; padding: 0 9px; text-overflow: ellipsis; white-space: nowrap; }
+.photo-name { padding-top: 7px; font-size: 11px; }
+.photo-date { padding-top: 3px; padding-bottom: 8px; color: var(--muted); font-size: 10px; }
+.photo-tile .tile-check { opacity: 0; }
+.photo-tile:hover .tile-check, .photo-tile.sel .tile-check, .photo-grid.selecting .tile-check { opacity: 1; }
+.photo-limit { margin: 4px 0; font-size: 12px; }
+
 /* holographic folder icon */
 .folder { width: 84px; height: 68px; position: relative; }
 .folder svg { width: 100%; height: 100%; overflow: visible; filter: drop-shadow(0 0 10px color-mix(in srgb, var(--fc, var(--cyan)) 45%, transparent)); }

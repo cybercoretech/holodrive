@@ -241,7 +241,7 @@ async function refreshTrashCount() {
 function markNav() {
   const root = S.path.split("/")[0];
   $$(".drive").forEach((d) => d.classList.toggle("active",
-    (S.route === "trash" && d.dataset.nav === "trash") || (S.route === "samba" && d.dataset.nav === "samba") || (S.route === "devices" && d.dataset.nav === "devices") || (S.route === "links" && d.dataset.nav === "links") || (S.route === "browse" || S.route === "search" || S.route === "time") && d.dataset.root === root));
+    (S.route === "photos" && d.dataset.nav === "photos") || (S.route === "trash" && d.dataset.nav === "trash") || (S.route === "samba" && d.dataset.nav === "samba") || (S.route === "devices" && d.dataset.nav === "devices") || (S.route === "links" && d.dataset.nav === "links") || (S.route === "browse" || S.route === "search" || S.route === "time") && d.dataset.root === root));
 }
 
 // ── routing ────────────────────────────────────────────────────────────
@@ -251,6 +251,7 @@ async function route() {
   const hash = location.hash.slice(1) || "/";
   const [pathPart, query] = hash.split("?");
   const parts = pathPart.split("/").filter(Boolean);
+  if (parts[0] === "photos") return showPhotos(parts[1] ? decPath(parts[1]) : null);
   if (parts[0] === "trash") return showTrash();
   if (parts[0] === "samba") return showSamba();
   if (parts[0] === "devices") return showDevices();
@@ -287,6 +288,7 @@ async function browse(vpath, keepSel) {
 }
 async function refresh() {
   if (S.route === "browse") await browse(S.path, true);
+  else if (S.route === "photos") await showPhotos(S.path);
   else if (S.route === "trash") await showTrash();
   else if (S.route === "search") await showSearch(S.path, S.search);
   else if (S.route === "samba") await showSamba();
@@ -313,6 +315,11 @@ function sortEntries(list) {
 
 function renderCrumbs() {
   const crumbs = $("#crumbs");
+  if (S.route === "photos") {
+    const root = S.roots.find((r) => r.id === S.path.split("/")[0]);
+    crumbs.replaceChildren(h("span", { class: "crumb last", text: `📸 Photos${root ? " · " + root.name : ""}` }));
+    return;
+  }
   if (S.route === "trash") { crumbs.replaceChildren(h("span", { class: "crumb last", text: "🗑️ Trash" })); return; }
   const parts = S.path.split("/").filter(Boolean);
   const root = S.roots.find((r) => r.id === parts[0]);
@@ -332,6 +339,12 @@ function render() {
   renderCrumbs(); markNav();
   const writable = S.route === "browse" && S.listing && S.listing.writable;
   for (const id of ["upload-btn", "mkdir-btn", "newfile-btn", "fab"]) $("#" + id).hidden = !writable;
+  $("#time-btn").hidden = S.route === "photos";
+  $("#photo-root").hidden = S.route !== "photos";
+  $("#photo-count").hidden = S.route !== "photos";
+  $("#sort-select").hidden = S.route === "photos";
+  $("#sort-dir").hidden = S.route === "photos";
+  $(".seg").hidden = S.route === "photos";
   $("#toolbar").hidden = S.route === "trash" || S.route === "time";
   $$(".seg-btn").forEach((b) => b.classList.toggle("on", b.dataset.view === S.view));
   $("#sort-select").value = S.sort;
@@ -339,13 +352,65 @@ function render() {
   const view = $("#view");
   if (!S.entries.length) {
     view.replaceChildren(h("div", { class: "empty" },
-      h("div", { class: "empty-icon emoji", text: S.route === "search" ? "🔭" : "🌌" }),
-      h("div", { text: S.route === "search" ? "No matches in this sector." : "Empty sector." }),
+      h("div", { class: "empty-icon emoji", text: S.route === "photos" ? "📸" : S.route === "search" ? "🔭" : "🌌" }),
+      h("div", { text: S.route === "photos" ? "No photos in this drive yet." : S.route === "search" ? "No matches in this sector." : "Empty sector." }),
       writable ? h("div", { class: "muted", text: "Drop files here or press U to upload." }) : null));
     updateSelbar(); return;
   }
-  view.replaceChildren(S.view === "list" ? renderList() : renderGrid());
+  view.replaceChildren(S.route === "photos" ? renderPhotoLibrary() : S.view === "list" ? renderList() : renderGrid());
   updateSelbar();
+}
+
+async function showPhotos(rootId) {
+  const root = S.roots.find((r) => r.id === rootId) || S.roots.find((r) => r.online) || S.roots[0];
+  if (!root) return;
+  if (root.id !== rootId) { location.replace("#/photos/" + encPath(root.id)); return; }
+  S.route = "photos"; S.path = root.id; S.sel.clear(); S.focus = -1; S.anchor = -1;
+  const picker = $("#photo-root");
+  picker.replaceChildren(...S.roots.map((r) => h("option", { value: r.id, text: `${r.icon} ${r.name}${r.online ? "" : " · offline"}` })));
+  picker.value = root.id;
+  renderCrumbs(); markNav(); updateSelbar();
+  const view = $("#view");
+  $("#photo-count").textContent = "Loading…";
+  view.replaceChildren(h("div", { class: "loading", text: `finding photos on ${root.name}…` }));
+  try {
+    const result = await api("GET", "/api/photos?path=" + enc(root.id));
+    if (S.route !== "photos" || S.path !== root.id) return;
+    S.photosTruncated = result.truncated;
+    S.listing = { path: root.id, writable: false };
+    S.entries = result.results;
+    $("#photo-count").textContent = `${result.results.length} photos${result.truncated ? " · partial scan" : ""}`;
+    render();
+    if (result.truncated) toast(`The scan reached its safety limit; some photos in ${root.name} may not be included.`);
+  } catch (e) {
+    view.replaceChildren(h("div", { class: "empty" }, h("div", { class: "empty-icon emoji", text: "⚠️" }), h("div", { text: e.message })));
+  }
+}
+
+function renderPhotoLibrary() {
+  const view = h("div", { class: "photo-library" });
+  const groups = new Map();
+  S.entries.forEach((entry, i) => {
+    const year = entry.mtime ? new Date(entry.mtime * 1000).getFullYear() : "Undated";
+    if (!groups.has(year)) groups.set(year, []);
+    groups.get(year).push([entry, i]);
+  });
+  for (const [year, items] of groups) {
+    const grid = h("div", { class: "photo-grid" });
+    for (const [entry, i] of items) {
+      const path = entryPath(entry);
+      const img = h("img", { src: thumbUrl(path), loading: "lazy", decoding: "async", alt: entry.name, draggable: "false" });
+      img.addEventListener("error", () => img.replaceWith(h("span", { class: "big-emoji emoji", text: "🖼️" })), { once: true });
+      grid.append(h("button", { type: "button", class: "photo-tile" + (S.sel.has(path) ? " sel" : ""), dataset: { i }, title: `${entry.name} · ${fmtDate(entry.mtime)}` },
+        h("span", { class: "tile-check", "data-check": "1", text: S.sel.has(path) ? "✓" : "" }),
+        h("span", { class: "photo-art" }, img),
+        h("span", { class: "photo-name", text: entry.name }),
+        h("span", { class: "photo-date", text: fmtDate(entry.mtime) })));
+    }
+    view.append(h("section", { class: "photo-year-group" }, h("h2", { class: "photo-year", text: String(year) }), grid));
+  }
+  if (S.photosTruncated) view.append(h("p", { class: "photo-limit muted", text: "This library scan reached its safety limit, so some photos in this drive may not be included." }));
+  return view;
 }
 
 function tileArt(e, path) {
@@ -417,6 +482,7 @@ function paintSel() {
     const c = el.querySelector(".tile-check"); if (c) c.textContent = on ? "✓" : "";
   }
   const box = $("#view .grid, #view .list"); if (box) box.classList.toggle("selecting", S.sel.size > 0);
+  const photos = $("#view .photo-grid"); if (photos) photos.classList.toggle("selecting", S.sel.size > 0);
   updateSelbar();
 }
 function updateSelbar() {
@@ -426,7 +492,7 @@ function updateSelbar() {
   const sel = selected();
   const bytes = sel.reduce((a, e) => a + (e.kind === "file" ? e.size : 0), 0);
   $("#sel-count").textContent = `${n} selected${bytes ? " · " + fmtSize(bytes) : ""}`;
-  const ro = !(S.listing && S.listing.writable) && S.route === "browse";
+  const ro = !(S.listing && S.listing.writable) && (S.route === "browse" || S.route === "photos");
   $$("#selbar [data-act]").forEach((b) => {
     const a = b.dataset.act;
     b.hidden = (a === "rename" && n !== 1) || ((a === "move" || a === "trash" || a === "rename") && ro);
@@ -2129,6 +2195,7 @@ function wireApp() {
   $$(".seg-btn").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
   $("#sort-select").addEventListener("change", (ev) => { S.sort = ev.target.value; store.set("sort", S.sort); S.entries = sortEntries(S.entries); render(); });
   $("#sort-dir").addEventListener("click", () => { S.dir *= -1; store.set("dir", S.dir); S.entries = sortEntries(S.entries); render(); });
+  $("#photo-root").addEventListener("change", (ev) => { location.hash = "#/photos/" + encPath(ev.target.value); });
   $("#selbar").addEventListener("click", (ev) => {
     const a = ev.target.closest("[data-act]"); if (!a) return;
     const sel = selected();
