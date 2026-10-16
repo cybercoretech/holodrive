@@ -61,6 +61,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/logout", post(logout))
         .route("/api/roots", get(roots))
         .route("/api/list", get(list))
+        .route("/api/photos", get(photos))
         .route("/api/stat", get(stat))
         .route("/api/exists", get(exists))
         .route("/api/search", get(search))
@@ -443,6 +444,11 @@ async fn roots(State(s): State<Shared>) -> Response {
 async fn list(State(s): State<Shared>, Query(q): Query<PathQ>) -> Response {
     let cfg = s.cfg.clone();
     reply!(blocking(move || fsops::list(&cfg, &q.path)))
+}
+
+async fn photos(State(s): State<Shared>, Query(q): Query<PathQ>) -> Response {
+    let cfg = s.cfg.clone();
+    reply!(blocking(move || fsops::photos(&cfg, &q.path)))
 }
 
 async fn stat(State(s): State<Shared>, Query(q): Query<PathQ>) -> Response {

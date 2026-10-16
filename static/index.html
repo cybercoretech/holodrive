@@ -83,6 +83,12 @@
   <div class="shell">
     <aside class="sidebar" id="sidebar">
       <div class="side-section">
+        <div class="side-label">library</div>
+        <nav class="drives">
+          <a href="#/photos" class="drive" data-nav="photos"><span class="drive-icon">📸</span><span class="drive-name">Photos</span></a>
+        </nav>
+      </div>
+      <div class="side-section">
         <div class="side-label">drives</div>
         <nav id="drives" class="drives"></nav>
       </div>
@@ -105,6 +111,8 @@
       <div class="crumbs-bar">
         <nav class="crumbs" id="crumbs" aria-label="Path"></nav>
         <div class="toolbar" id="toolbar">
+          <select id="photo-root" class="select" title="Photo library drive" hidden></select>
+          <span id="photo-count" class="muted" hidden></span>
           <button type="button" class="btn btn-primary" id="upload-btn" title="Upload files (u)">⬆ Upload</button>
           <button type="button" class="btn" id="mkdir-btn" title="New folder (n)">📁 New folder</button>
           <button type="button" class="btn hide-sm" id="newfile-btn" title="New text file">📝 New file</button>

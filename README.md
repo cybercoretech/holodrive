@@ -14,6 +14,11 @@ Cybercore. One Rust binary, no database, no Node.
 - **Grid or list.** Glowing holographic folders tinted per name, emoji tags for
   known folders (📱 `from-phone`, 🤝 `handoffs`, 🧬 `src`…), file-type emoji,
   and real thumbnails for pictures and videos.
+- **Photos library.** Open Photos in the sidebar to browse raster images across
+  a drive, grouped by year, without changing where files are stored. Select a
+  drive, open images in the existing lightbox, and download selections. Scans
+  skip hidden content and links, and stop at a fixed safety limit on very large
+  drives.
 - **Lightbox.** Pictures with zoom (wheel, double-click, pinch), drag to pan,
   swipe or ←/→ between them, and a filmstrip. Videos stream with seeking; audio
   plays on a spinning disc; PDFs open inline.
