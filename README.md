@@ -2,6 +2,8 @@
 
 # HOLODRIVE
 
+Project page: <https://cybercore-tech.github.io/holodrive/>.
+
 **A neon web file manager for your own machine, reached over your tailnet.**
 Browse, preview, upload, move and restore the folders you share — from the
 desktop, another box, or your phone — in the same CYBERGRID look as the rest of
