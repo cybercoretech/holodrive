@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en" data-theme="cybercore-tech">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#09080f">
+  <meta name="description" content="Holodrive is a self-hosted private cloud for browsing, organizing, and sharing files and photos across your devices.">
+  <title>Holodrive — Your files, in your orbit</title>
+  <link rel="icon" href="static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="#top" aria-label="Holodrive home">
+      <img src="static/holocube.svg" alt="" width="38" height="38">
+      <span>HOLODRIVE</span>
+    </a>
+    <nav class="main-nav" aria-label="Main navigation">
+      <a href="#library">LIBRARY</a>
+      <a href="#privacy">PRIVACY</a>
+      <a href="#connect">GET STARTED</a>
+    </nav>
+    <div class="theme-picker">
+      <span class="theme-label">CYBERGRID</span>
+      <button id="themeButton" class="theme-button" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="themeMenu">LOADING THEMES…</button>
+      <div id="themeMenu" class="theme-menu" role="listbox" aria-label="Choose a Cybercore theme" hidden></div>
+      <select id="themeSelect" aria-label="Choose a Cybercore theme" tabindex="-1"></select>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero wrap">
+      <div class="hero-copy">
+        <p class="eyebrow"><i></i> YOUR PRIVATE CLOUD / YOUR HARDWARE</p>
+        <h1>Your files,<br><em>in your orbit.</em></h1>
+        <p class="lede">Holodrive brings your photos and files into one fast, self-hosted library. Browse from the web or Android, share with care, and keep control of where everything lives.</p>
+        <div class="actions">
+          <a class="button primary" href="https://github.com/cybercore-tech/holodrive#readme">EXPLORE THE PROJECT <span>↗</span></a>
+          <a class="button" href="https://github.com/cybercore-tech/holodrive-android-app">ANDROID APP <span>↗</span></a>
+        </div>
+        <p class="signal"><b>●</b> SELF-HOSTED <span>—</span> FILES + PHOTOS <span>—</span> CYBERGRID THEMES</p>
+      </div>
+      <div class="preview-card">
+        <div class="preview-head"><span><i></i> HOLODRIVE / LIBRARY</span><b>LOCAL VIEW</b></div>
+        <img src="static/photos-library.png" alt="Holodrive Photos library with year-grouped image thumbnails">
+        <div class="preview-foot"><span>PHOTO LIBRARY</span><span>FILES · ALBUMS · SEARCH</span></div>
+      </div>
+    </section>
+
+    <section class="section wrap" id="library">
+      <div class="section-head">
+        <p class="eyebrow">01 / ONE LIBRARY, TWO VIEWS</p>
+        <h2>Move through<br><em>your whole archive.</em></h2>
+        <p>Find the right view for the job. Switch from a photo timeline to a familiar folder browser without moving your files into someone else’s cloud.</p>
+      </div>
+      <div class="feature-grid">
+        <article class="feature cyan"><span class="feature-index">01 / PHOTOS</span><div class="feature-icon">▧</div><h3>See the moments.</h3><p>Browse image libraries as a visual gallery, grouped by year. Open a photo, move through the viewer, and download what you want to keep nearby.</p><a href="https://github.com/cybercore-tech/holodrive#what-it-does">PHOTO LIBRARY DETAILS ↗</a></article>
+        <article class="feature pink"><span class="feature-index">02 / FILES</span><div class="feature-icon">▤</div><h3>Find every file.</h3><p>Move through drives and folders, search the current location, select items, and upload or download files through the web interface.</p><a href="https://github.com/cybercore-tech/holodrive#what-it-does">FILE BROWSER DETAILS ↗</a></article>
+        <article class="feature acid"><span class="feature-index">03 / SHARING</span><div class="feature-icon">↗</div><h3>Share on your terms.</h3><p>Create links with optional passwords, expiry dates, and download limits. Drop boxes let others send files into a folder you choose.</p><a href="https://github.com/cybercore-tech/holodrive#share-links">SHARE LINK DETAILS ↗</a></article>
+        <article class="feature orange"><span class="feature-index">04 / ANDROID</span><div class="feature-icon">⌁</div><h3>Take it with you.</h3><p>Use the Android companion to browse on the go and send files from other apps into your Holodrive library.</p><a href="https://github.com/cybercore-tech/holodrive-android-app">ANDROID PROJECT ↗</a></article>
+      </div>
+    </section>
+
+    <section class="privacy-band" id="privacy">
+      <div class="wrap privacy-inner">
+        <div><p class="eyebrow">02 / YOU HOLD THE KEYS</p><h2>Your cloud.<br><em>Your rules.</em></h2></div>
+        <div class="privacy-copy"><p>Holodrive runs on a machine you control and works with the storage you already have. You choose which folders to expose, who can sign in, and how a shared link behaves.</p><ul><li>Local drives and mounted storage</li><li>Password sign-in and device tokens</li><li>Optional time-limited, protected links</li><li>Cybercore themes, shared across the suite</li></ul></div>
+      </div>
+    </section>
+
+    <section class="section wrap connect" id="connect">
+      <div><p class="eyebrow">03 / OPEN SOURCE</p><h2>Bring your<br><em>drive online.</em></h2><p>Read the setup guide, inspect the source, and build a private cloud around the devices and storage you already trust.</p></div>
+      <div class="connect-links">
+        <a href="https://github.com/cybercore-tech/holodrive"><span>01</span><b>SERVER + WEB GUI</b><i>VIEW REPOSITORY ↗</i></a>
+        <a href="https://github.com/cybercore-tech/holodrive-android-app"><span>02</span><b>ANDROID CLIENT</b><i>VIEW REPOSITORY ↗</i></a>
+        <a href="https://github.com/cybercore-tech/cybercore/tree/main/theme-studio"><span>03</span><b>CYBERCORE THEME STUDIO</b><i>EXPLORE THEMES ↗</i></a>
+      </div>
+    </section>
+  </main>
+
+  <footer><span>HOLODRIVE / YOUR FILES, IN YOUR ORBIT</span><span>BUILT WITH <a href="https://github.com/cybercore-tech/cybercore">CYBERCORE</a> · OPEN SOURCE</span></footer>
+  <script src="app.js"></script>
+</body>
+</html>
