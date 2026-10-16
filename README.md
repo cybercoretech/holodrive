@@ -1,6 +1,6 @@
 <p align="center"><img src="static/holocube.svg" width="96" alt=""></p>
 
-# HOLODRIVE
+# 🧊 HOLODRIVE
 
 Project page: <https://cybercore-tech.github.io/holodrive/>.
 
@@ -9,7 +9,7 @@ Browse, preview, upload, move and restore the folders you share — from the
 desktop, another box, or your phone — in the same CYBERGRID look as the rest of
 Cybercore. One Rust binary, no database, no Node.
 
-## What it does
+## ✨ What it does
 
 - **Drives.** Each shared folder is a drive in the sidebar, with free space and
   a read-only badge where it applies (e.g. ISOs).
@@ -79,7 +79,7 @@ Cybercore. One Rust binary, no database, no Node.
   Ctrl+A/C/X/V, `/` search, `g`/`l` grid/list, `u` upload, `n` new folder,
   `:` command line, `e` edit, `v` versions, `t` time machine, `i` properties, `r` refresh.
 
-## Security model
+## 🛡️ Security model
 
 - Listens on **127.0.0.1** only. `tailscale serve` publishes it to your tailnet
   (WireGuard-encrypted); nothing is opened to the LAN or the internet.
@@ -98,7 +98,7 @@ Cybercore. One Rust binary, no database, no Node.
   `Content-Security-Policy: sandbox`; HTML and SVG download instead of opening.
   The app itself runs under a strict CSP with no inline script.
 
-## Install
+## 📦 Install
 
 ```sh
 ./packaging/install.sh            # builds, writes ~/.config/holodrive/config.toml,
@@ -129,7 +129,11 @@ writable = true
 Then `systemctl --user restart holodrive`. Thumbnails cache in
 `~/.cache/holodrive`. Optional: `ffmpeg` for video thumbnails.
 
-## Samba helper (optional)
+## 📱 Android app
+
+Install the companion app from [the latest signed GitHub Release](https://github.com/cybercore-tech/holodrive-android-app/releases/latest) or read the [Android install and feature guide](https://cybercore-tech.github.io/holodrive-android-app/). For automatic update checks, add `https://github.com/cybercore-tech/holodrive-android-app` to [Obtainium](https://github.com/ImranR98/Obtainium). The APK release includes a SHA-256 checksum and installation instructions.
+
+## 🧩 Samba helper (optional)
 
 The share list works without privileges (smb.conf is world-readable).
 Changing it, seeing sessions and controlling smbd go through a small root
@@ -164,7 +168,7 @@ it's given:
   is backed up to `/var/lib/holodrive/smb-backups` (last 20 kept);
 - every change is logged: `journalctl -t holodrive-sambactl`.
 
-## Share links
+## 🔗 Share links
 
 Give someone one file or folder, or a **drop box** to upload into, without
 the Holodrive password: right-click → **Share link…** (or `:link` in a
@@ -184,7 +188,7 @@ a drop box, to upload files without seeing what's already there.
 - Links work wherever Holodrive is reachable, i.e. your tailnet. Opening
   them to the internet (Tailscale Funnel) is deliberately not done for you.
 
-## Devices (tokens for apps and scripts)
+## 📱 Devices (tokens for apps and scripts)
 
 The Android app, scripts and other computers can use their own **device
 token** instead of the password: `Authorization: Bearer hd_…`. Each token can
@@ -207,7 +211,7 @@ browser session.
 curl -H "Authorization: Bearer $TOKEN" http://blackbox.tail1234.ts.net:8768/api/roots
 ```
 
-## Resumable upload API
+## ⬆️ Resumable upload API
 
 For apps and scripts (the web page uses it for big files). Send a device
 token (`Authorization: Bearer …`), or use a browser session (cookie +
@@ -228,7 +232,7 @@ continue. `start` refuses files bigger than the drive's free space (`507`).
 Data waits in `<drive>/.holodrive-uploads/` (same filesystem, so `finish` is
 a rename) and is removed after a day without progress.
 
-## Roadmap
+## 🧭 Roadmap
 
 - (open) ideas welcome.
 
