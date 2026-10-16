@@ -131,7 +131,7 @@ Then `systemctl --user restart holodrive`. Thumbnails cache in
 
 ## 📱 Android app
 
-The first signed companion-app release is being prepared. Follow [GitHub Releases](https://github.com/cybercore-tech/holodrive-android-app/releases) for the APK and read the [Android install and feature guide](https://cybercore-tech.github.io/holodrive-android-app/). For automatic update checks after release, add `https://github.com/cybercore-tech/holodrive-android-app` to [Obtainium](https://github.com/ImranR98/Obtainium). Signed APK releases include a SHA-256 checksum and installation instructions.
+Version 0.1.0 of the signed companion app is available for Android 11 and newer. [Download the APK](https://github.com/cybercore-tech/holodrive-android-app/releases/latest/download/holodrive-photos.apk), read the [Android install and feature guide](https://cybercore-tech.github.io/holodrive-android-app/), or see the [release notes and SHA-256 checksum](https://github.com/cybercore-tech/holodrive-android-app/releases/latest). For update notifications, add `https://github.com/cybercore-tech/holodrive-android-app` to [Obtainium](https://github.com/ImranR98/Obtainium).
 
 ## 🧩 Samba helper (optional)
 
