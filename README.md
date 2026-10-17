@@ -2,7 +2,7 @@
 
 # 🧊 HOLODRIVE
 
-Project page: <https://cybercore-tech.github.io/holodrive/>.
+Project page: <https://cybercoretech.github.io/holodrive/>.
 
 **A neon web file manager for your own machine, reached over your tailnet.**
 Browse, preview, upload, move and restore the folders you share — from the
@@ -131,7 +131,7 @@ Then `systemctl --user restart holodrive`. Thumbnails cache in
 
 ## 📱 Android app
 
-Version 0.1.0 of the signed companion app is available for Android 11 and newer. [Download the APK](https://github.com/cybercore-tech/holodrive-android-app/releases/latest/download/holodrive-photos.apk), read the [Android install and feature guide](https://cybercore-tech.github.io/holodrive-android-app/), or see the [release notes and SHA-256 checksum](https://github.com/cybercore-tech/holodrive-android-app/releases/latest). For update notifications, add `https://github.com/cybercore-tech/holodrive-android-app` to [Obtainium](https://github.com/ImranR98/Obtainium).
+Version 0.1.0 of the signed companion app is available for Android 11 and newer. [Download the APK](https://github.com/cybercoretech/holodrive-android-app/releases/latest/download/holodrive-photos.apk), read the [Android install and feature guide](https://cybercoretech.github.io/holodrive-android-app/), or see the [release notes and SHA-256 checksum](https://github.com/cybercoretech/holodrive-android-app/releases/latest). For update notifications, add `https://github.com/cybercoretech/holodrive-android-app` to [Obtainium](https://github.com/ImranR98/Obtainium).
 
 ## 🧩 Samba helper (optional)
 

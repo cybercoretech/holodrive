@@ -14,7 +14,7 @@ const labels = {
 };
 const display = (name) => name.replaceAll("-", " ").toUpperCase();
 const paletteCache = new Map();
-const catalogUrl = "https://cybercore-tech.github.io/data/cybergrid.json";
+const catalogUrl = "https://cybercoretech.github.io/data/cybergrid.json";
 
 function applyPalette(name, palette) {
   const variables = {
@@ -33,7 +33,7 @@ function applyPalette(name, palette) {
 async function loadPalette(name, family) {
   const key = `${family}/${name}`;
   if (!paletteCache.has(key)) {
-    const url = `https://cybercore-tech.github.io/data/themes/${encodeURIComponent(family)}/${encodeURIComponent(name)}.json`;
+    const url = `https://cybercoretech.github.io/data/themes/${encodeURIComponent(family)}/${encodeURIComponent(name)}.json`;
     paletteCache.set(key, fetch(url).then((response) => {
       if (!response.ok) throw new Error(`Theme request failed (${response.status})`);
       return response.json();

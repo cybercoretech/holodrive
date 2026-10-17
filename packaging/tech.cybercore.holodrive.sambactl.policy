@@ -7,7 +7,7 @@
      service and has no way to ask. The helper validates everything itself. -->
 <policyconfig>
   <vendor>Cybercore Tech</vendor>
-  <vendor_url>https://github.com/cybercore-tech/holodrive</vendor_url>
+  <vendor_url>https://github.com/cybercoretech/holodrive</vendor_url>
   <action id="tech.cybercore.holodrive.sambactl">
     <description>Manage Samba shares with Holodrive</description>
     <message>Authentication is required to manage Samba shares with Holodrive</message>

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Holodrive — a neon web file manager for your own machine, over your tailnet (Cybercore Tech)"
 license = "MIT"
-repository = "https://github.com/cybercore-tech/holodrive"
+repository = "https://github.com/cybercoretech/holodrive"
 
 [dependencies]
 anyhow = "1.0"

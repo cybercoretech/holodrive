@@ -1,6 +1,6 @@
 [Unit]
 Description=Holodrive — neon web file manager (127.0.0.1, published by tailscale serve)
-Documentation=https://github.com/cybercore-tech/holodrive
+Documentation=https://github.com/cybercoretech/holodrive
 After=network-online.target
 
 [Service]
