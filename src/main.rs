@@ -7,6 +7,7 @@ mod auth;
 mod config;
 mod cybergrid;
 mod fsops;
+mod ghostport;
 mod jsonfile;
 mod links;
 mod media;

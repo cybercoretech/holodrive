@@ -211,6 +211,16 @@ browser session.
 curl -H "Authorization: Bearer $TOKEN" http://blackbox.tail1234.ts.net:8768/api/roots
 ```
 
+### 🔐 GhostPort tunnel status
+
+`GET /api/integrations/ghostport/status` returns read-only connection health
+(`status/v1`) and is available to a Holodrive session or device token. The
+server reads GhostPort's owner-only Unix socket locally; peer addresses and
+names are removed from the response. Run both daemons as the same OS user,
+or set `GHOSTPORT_STATUS_SOCKET` in the Holodrive service environment for a
+nonstandard socket path. The endpoint cannot change GhostPort configuration
+or control its tunnels.
+
 ## ⬆️ Resumable upload API
 
 For apps and scripts (the web page uses it for big files). Send a device

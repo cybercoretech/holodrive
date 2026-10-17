@@ -14,7 +14,9 @@
 use crate::auth::{self, Auth, LoginBrake};
 use crate::config::Config;
 use crate::fsops::{self, FsError};
-use crate::{cybergrid, links, media, samba, smbconf, snapshots, tokens, uploads, views};
+use crate::{
+    cybergrid, ghostport, links, media, samba, smbconf, snapshots, tokens, uploads, views,
+};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
@@ -47,6 +49,10 @@ pub struct AppState {
 
 type Shared = Arc<AppState>;
 
+async fn ghostport_status() -> Json<ghostport::IntegrationStatus> {
+    Json(ghostport::status().await)
+}
+
 pub fn router(state: Shared) -> Router {
     Router::new()
         .route("/", get(index))
@@ -56,6 +62,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/cybergrid/themes", get(cybergrid::list_themes))
         .route("/api/cybergrid/events", get(cybergrid::theme_events))
         .route("/api/cybergrid/css/:name", get(cybergrid::theme_css))
+        .route("/api/integrations/ghostport/status", get(ghostport_status))
         .route("/api/session", get(session))
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
