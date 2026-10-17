@@ -1556,15 +1556,37 @@ function linkDialog(e) {
     [["1", "1 day"], ["7", "7 days"], ["30", "30 days"], ["0", "never"]].map(([v, t]) => h("option", { value: v, text: t })));
   days.value = "7";
   const pw = h("input", { class: "text-input", type: "password", placeholder: "optional", autocomplete: "new-password" });
+  const revealPassphrase = h("button", { class: "btn", type: "button", text: "👁 Show", onclick: () => {
+    pw.type = pw.type === "password" ? "text" : "password";
+    revealPassphrase.textContent = pw.type === "password" ? "👁 Show" : "🙈 Hide";
+  } });
+  const wordCount = h("select", { class: "select", "aria-label": "Keysmith passphrase length" },
+    [[4, "4 words"], [6, "6 words"], [8, "8 words"], [10, "10 words"]].map(([n, label]) => h("option", { value: n, text: label })));
+  wordCount.value = "6";
+  const entropy = () => (Number(wordCount.value) * Math.log2(7776)).toFixed(1);
+  const keysmithNote = h("small", { class: "muted", text: `Generated locally with Keysmith's EFF wordlist · about ${entropy()} bits. Sent only when you create the link.` });
+  wordCount.addEventListener("change", () => { keysmithNote.textContent = `Generated locally with Keysmith's EFF wordlist · about ${entropy()} bits. Sent only when you create the link.`; });
+  const keysmithRow = h("div", { class: "path-row" }, wordCount,
+    h("button", { class: "btn", type: "button", text: "🔑 Generate with Keysmith", onclick: async () => {
+      try { pw.value = await Keysmith.generatePassphrase({ words: Number(wordCount.value) }); pw.dispatchEvent(new Event("input", { bubbles: true })); }
+      catch (err) { keysmithNote.textContent = err.message; }
+    } }),
+    h("button", { class: "btn", type: "button", text: "📋 Copy", onclick: async () => {
+      if (!pw.value) { keysmithNote.textContent = "Generate a passphrase first."; return; }
+      try { await navigator.clipboard.writeText(pw.value); keysmithNote.textContent = "Passphrase copied. Treat it like a password."; }
+      catch (_) { keysmithNote.textContent = "Clipboard access is unavailable. Generate again and copy it manually."; }
+    } }), revealPassphrase);
   const max = h("input", { class: "text-input", type: "number", min: "1", placeholder: "unlimited" });
   const label = h("input", { class: "text-input", placeholder: e.name, maxlength: "80" });
   const row = (l, el) => h("label", { class: "field" }, h("span", { class: "field-label", text: l }), el);
   const create = async () => {
     let l;
+    const linkPassword = pw.value;
     try {
-      l = await api("POST", "/api/links", { path, mode: mode.value, days: +days.value, password: pw.value || null,
+      l = await api("POST", "/api/links", { path, mode: mode.value, days: +days.value, password: linkPassword || null,
         max_downloads: max.value ? +max.value : null, label: label.value || null });
     } catch (err) { fail(err); return; }
+    pw.value = "";
     const url = linkUrl(l);
     modal("Share link ready", h("div", { class: "field" },
       h("span", { class: "field-label", text: `${l.mode === "drop" ? "drop box" : "link"} for ${l.name}` }),
@@ -1575,7 +1597,7 @@ function linkDialog(e) {
       h("button", { class: "btn btn-primary", type: "button", text: "📋 Copy link", onclick: () => { copyText(url, "link"); closeModal(); } })]);
   };
   modal(`Share ${e.name}`, h("form", { class: "field", onsubmit: (ev) => { ev.preventDefault(); create(); } },
-    row("access", mode), row("expires", days), row("password", pw), row("max downloads", max), row("title shown to them", label)),
+    row("access", mode), row("expires", days), row("password", pw), keysmithRow, keysmithNote, row("max downloads", max), row("title shown to them", label)),
   [h("button", { class: "btn", type: "button", text: "Cancel", onclick: closeModal }),
     h("button", { class: "btn btn-primary", type: "button", text: "Create link", onclick: create })]);
 }

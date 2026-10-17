@@ -232,6 +232,14 @@ continue. `start` refuses files bigger than the drive's free space (`507`).
 Data waits in `<drive>/.holodrive-uploads/` (same filesystem, so `finish` is
 a rename) and is removed after a day without progress.
 
+## 🔑 Keysmith passphrases
+
+Share-link passwords can be generated locally with the Keysmith passphrase
+generator. The browser uses Web Crypto and the pinned EFF Large Wordlist; the
+generated phrase is sent to Holodrive only when the user creates the protected
+share link. Holodrive never logs the generated phrase. The integration follows
+Keysmith's [`passphrase/v1` contract](https://github.com/cybercore-tech/keysmith/blob/main/docs/passphrase-api-v1.md).
+
 ## 🧭 Roadmap
 
 - (open) ideas welcome.
