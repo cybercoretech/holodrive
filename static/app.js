@@ -138,7 +138,7 @@ const rawUrl = (path, dl, snap) => `/api/${snap ? "snap/" : ""}raw?path=${enc(pa
 const S = {
   session: null, roots: [], path: "", listing: null, entries: [], sel: new Set(), focus: -1, anchor: -1,
   view: store.get("view", isTouch ? "grid" : "grid"), sort: store.get("sort", "name"), dir: store.get("dir", 1),
-  clip: null, route: "browse", search: null,
+  clip: null, route: "browse", search: null, folderEvents: null, eventPath: null, eventRefresh: null,
 };
 const entryPath = (e) => e.path || (S.path ? S.path + "/" + e.name : e.name);
 
@@ -161,6 +161,7 @@ async function bootLog() {
 
 function showLogin() {
   AUTHED = false;
+  S.folderEvents?.close(); S.folderEvents = null; S.eventPath = null;
   $("#app").hidden = true;
   $("#login").hidden = false;
   document.body.classList.remove("booting");
@@ -284,6 +285,7 @@ function markNav() {
 // ── routing ────────────────────────────────────────────────────────────
 async function route() {
   closeViewer(); closeCtx(); $("#sidebar").classList.remove("open");
+  S.folderEvents?.close(); S.folderEvents = null; S.eventPath = null;
   if (!location.hash.startsWith("#/time/")) { $("#timebar").hidden = true; document.body.classList.remove("time-travel"); }
   const hash = location.hash.slice(1) || "/";
   const [pathPart, query] = hash.split("?");
@@ -308,6 +310,7 @@ const go = (vpath) => { location.hash = "#/browse/" + encPath(vpath); };
 
 // ── browse ─────────────────────────────────────────────────────────────
 async function browse(vpath, keepSel) {
+  if (S.eventPath !== vpath) { S.folderEvents?.close(); S.folderEvents = null; S.eventPath = null; }
   S.route = "browse"; S.path = vpath; S.search = null;
   $("#search-input").value = "";
   const view = $("#view");
@@ -322,6 +325,32 @@ async function browse(vpath, keepSel) {
   if (!keepSel) { S.sel.clear(); S.focus = -1; S.anchor = -1; }
   S.entries = sortEntries(S.listing.entries);
   render();
+  watchFolder(vpath);
+}
+
+function watchFolder(path) {
+  if (S.eventPath === path && S.folderEvents) return;
+  S.folderEvents?.close();
+  S.folderEvents = null;
+  S.eventPath = path;
+  if (!window.EventSource) return;
+  const events = new EventSource("/api/events?path=" + enc(path));
+  S.folderEvents = events;
+  events.addEventListener("folder-change", (event) => {
+    let detail;
+    try { detail = JSON.parse(event.data); } catch { return; }
+    const changed = detail.path;
+    if (!AUTHED || S.route !== "browse" || S.path !== changed || S.eventRefresh) return;
+    const count = (detail.added?.length || 0) + (detail.updated?.length || 0) + (detail.removed?.length || 0);
+    if (count) toast(`📡 ${count} change${count === 1 ? "" : "s"} in ${baseName(changed)}`, "ok");
+    S.eventRefresh = setTimeout(async () => {
+      S.eventRefresh = null;
+      if (!AUTHED || S.route !== "browse" || S.path !== changed) return;
+      const scroll = $("#view").scrollTop;
+      await browse(changed, true);
+      $("#view").scrollTop = scroll;
+    }, 180);
+  });
 }
 async function refresh() {
   if (S.route === "browse") await browse(S.path, true);
@@ -377,6 +406,7 @@ function render() {
   const writable = S.route === "browse" && S.listing && S.listing.writable;
   for (const id of ["upload-btn", "mkdir-btn", "newfile-btn", "fab"]) $("#" + id).hidden = !writable;
   $("#time-btn").hidden = S.route === "photos";
+  $("#phone-link-btn").hidden = S.route !== "browse";
   $("#photo-root").hidden = S.route !== "photos";
   $("#photo-count").hidden = S.route !== "photos";
   $("#sort-select").hidden = S.route === "photos";
@@ -428,7 +458,7 @@ function renderPhotoLibrary() {
   const view = h("div", { class: "photo-library" });
   const groups = new Map();
   S.entries.forEach((entry, i) => {
-    const year = entry.mtime ? new Date(entry.mtime * 1000).getFullYear() : "Undated";
+    const year = entry.capture_date?.slice(0, 4) || (entry.mtime ? new Date(entry.mtime * 1000).getFullYear() : "Undated");
     if (!groups.has(year)) groups.set(year, []);
     groups.get(year).push([entry, i]);
   });
@@ -436,13 +466,14 @@ function renderPhotoLibrary() {
     const grid = h("div", { class: "photo-grid" });
     for (const [entry, i] of items) {
       const path = entryPath(entry);
+      const captured = entry.capture_date?.slice(0, 10).replaceAll(":", "-");
       const img = h("img", { src: thumbUrl(path), loading: "lazy", decoding: "async", alt: entry.name, draggable: "false" });
       img.addEventListener("error", () => img.replaceWith(h("span", { class: "big-emoji emoji", text: "🖼️" })), { once: true });
-      grid.append(h("button", { type: "button", class: "photo-tile" + (S.sel.has(path) ? " sel" : ""), dataset: { i }, title: `${entry.name} · ${fmtDate(entry.mtime)}` },
+      grid.append(h("button", { type: "button", class: "photo-tile" + (S.sel.has(path) ? " sel" : ""), dataset: { i }, title: `${entry.name} · ${captured || fmtDate(entry.mtime)}` },
         h("span", { class: "tile-check", "data-check": "1", text: S.sel.has(path) ? "✓" : "" }),
         h("span", { class: "photo-art" }, img),
         h("span", { class: "photo-name", text: entry.name }),
-        h("span", { class: "photo-date", text: fmtDate(entry.mtime) })));
+        h("span", { class: "photo-date", text: captured || fmtDate(entry.mtime) })));
     }
     view.append(h("section", { class: "photo-year-group" }, h("h2", { class: "photo-year", text: String(year) }), grid));
   }
@@ -760,6 +791,27 @@ function modal(title, body, actions) {
   const first = $("#modal-body input, #modal-body .btn-primary"); if (first) setTimeout(() => first.focus(), 30);
 }
 function closeModal() { $("#modal").hidden = true; $("#modal-body").replaceChildren(); delete $("#modal").dataset.kind; $(".modal-window").classList.remove("wide"); }
+async function loadActivity() {
+  const list = $("#activity-items");
+  if (!list) return;
+  list.replaceChildren(h("p", { class: "muted", text: "reading recent activity…" }));
+  try {
+    const items = await api("GET", "/api/activity");
+    list.replaceChildren(...(items.length ? items.map((item) => h("article", { class: "activity-item" },
+      h("span", { class: "activity-mark", text: item.kind === "folder-change" ? "📡" : "•" }),
+      h("div", {}, h("strong", { text: item.path }), h("div", { class: "muted", text: `${item.detail} · ${fmtDate(item.at)}` }))))
+      : [h("p", { class: "muted", text: "No recent activity. Changes appear here while a browser or phone is watching the folder." })]));
+  } catch (error) { list.replaceChildren(h("p", { class: "error", text: error.message })); }
+}
+function showActivity() {
+  const list = h("div", { class: "activity-list", id: "activity-items" });
+  modal("Recent activity", list, [
+    h("button", { class: "btn", type: "button", text: "Refresh", onclick: loadActivity }),
+    h("button", { class: "btn btn-primary", type: "button", text: "Done", onclick: closeModal }),
+  ]);
+  $("#modal").dataset.kind = "activity";
+  loadActivity();
+}
 function prompt(title, label, value, okText, selectStem) {
   return new Promise((resolve) => {
     const input = h("input", { class: "text-input", value: value || "", spellcheck: "false" });
@@ -2136,6 +2188,23 @@ function wireApp() {
       h("stop", { offset: "0", "stop-color": "#fff", "stop-opacity": ".38" }), h("stop", { offset: "1", "stop-color": "#fff", "stop-opacity": "0" })))));
 
   const view = $("#view");
+  $("#activity-btn").addEventListener("click", showActivity);
+  $("#phone-link-btn").addEventListener("click", async () => {
+    const link = "holodrive://open?path=" + encodeURIComponent(S.path);
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(link);
+      else {
+        const field = h("textarea", { readonly: "" }); field.value = link;
+        document.body.append(field); field.select(); document.execCommand("copy"); field.remove();
+      }
+    } catch { /* link remains available to copy from the dialog */ }
+    const qr = h("img", { class: "phone-qr", alt: "Scan to open this folder in Holodrive Photos", src: "/api/qr?path=" + enc(S.path) });
+    qr.addEventListener("error", () => qr.replaceWith(h("p", { class: "muted", text: "QR generation is unavailable here. Copy the link below and open it on the phone." })), { once: true });
+    const body = h("div", { class: "field" }, qr,
+      h("span", { class: "field-label", text: "Open the camera on your phone and scan this code" }),
+      h("code", { class: "muted", text: link }));
+    modal("Send folder to phone", body, [h("button", { class: "btn btn-primary", type: "button", text: "Done", onclick: closeModal })]);
+  });
   let pressTimer = null, pressed = false;
   view.addEventListener("click", (ev) => {
     const item = ev.target.closest("[data-i]");

@@ -584,6 +584,9 @@ pub fn photos(cfg: &Config, vpath: &str) -> FsResult<Value> {
         let key = (item.mtime, path.clone());
         let mut value = serde_json::to_value(item).unwrap_or_default();
         value["path"] = json!(path);
+        if let Some(capture_date) = crate::media::exif_capture_date(entry.path()) {
+            value["capture_date"] = json!(capture_date);
+        }
         recent.insert(key, value);
         found += 1;
         if recent.len() > MAX_RESULTS {
@@ -591,7 +594,18 @@ pub fn photos(cfg: &Config, vpath: &str) -> FsResult<Value> {
         }
     }
     let clipped = found > MAX_RESULTS;
-    let results: Vec<_> = recent.into_iter().rev().map(|(_, item)| item).collect();
+    let mut results: Vec<_> = recent.into_iter().rev().map(|(_, item)| item).collect();
+    results.sort_by(|first, second| {
+        match (
+            first["capture_date"].as_str(),
+            second["capture_date"].as_str(),
+        ) {
+            (Some(a), Some(b)) => b.cmp(a),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => second["mtime"].as_u64().cmp(&first["mtime"].as_u64()),
+        }
+    });
     Ok(
         json!({ "path": r.vpath(), "results": results, "truncated": truncated || clipped, "scanned": scanned }),
     )

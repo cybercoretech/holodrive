@@ -10,6 +10,148 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Read the standard EXIF capture timestamp from the header of a JPEG.
+/// The value is kept as camera-local text because EXIF usually has no timezone.
+pub fn exif_capture_date(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(1024 * 1024)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.get(..2)? != [0xff, 0xd8] {
+        return None;
+    }
+    let mut pos = 2usize;
+    while pos + 4 <= bytes.len() {
+        if bytes[pos] != 0xff {
+            pos += 1;
+            continue;
+        }
+        while bytes.get(pos) == Some(&0xff) {
+            pos += 1;
+        }
+        let marker = *bytes.get(pos)?;
+        pos += 1;
+        if marker == 0xda || marker == 0xd9 {
+            break;
+        }
+        if marker == 0x01 || (0xd0..=0xd7).contains(&marker) {
+            continue;
+        }
+        let length = u16::from_be_bytes([*bytes.get(pos)?, *bytes.get(pos + 1)?]) as usize;
+        if length < 2 || pos + length > bytes.len() {
+            break;
+        }
+        let segment = &bytes[pos + 2..pos + length];
+        if marker == 0xe1
+            && segment.starts_with(b"Exif\0\0")
+            && let Some(value) = tiff_capture_date(&segment[6..])
+        {
+            return Some(value);
+        }
+        pos += length;
+    }
+    None
+}
+
+fn tiff_capture_date(bytes: &[u8]) -> Option<String> {
+    let little = match bytes.get(..2)? {
+        b"II" => true,
+        b"MM" => false,
+        _ => return None,
+    };
+    let u16_at = |at: usize| -> Option<u16> {
+        let value: [u8; 2] = bytes.get(at..at + 2)?.try_into().ok()?;
+        Some(if little {
+            u16::from_le_bytes(value)
+        } else {
+            u16::from_be_bytes(value)
+        })
+    };
+    let u32_at = |at: usize| -> Option<u32> {
+        let value: [u8; 4] = bytes.get(at..at + 4)?.try_into().ok()?;
+        Some(if little {
+            u32::from_le_bytes(value)
+        } else {
+            u32::from_be_bytes(value)
+        })
+    };
+    if u16_at(2)? != 42 {
+        return None;
+    }
+    let ifd0 = u32_at(4)? as usize;
+    let count = u16_at(ifd0)? as usize;
+    let mut exif_ifd = None;
+    let mut fallback = None;
+    for index in 0..count.min(512) {
+        let entry = ifd0.checked_add(2)?.checked_add(index.checked_mul(12)?)?;
+        let tag = u16_at(entry)?;
+        let kind = u16_at(entry + 2)?;
+        let amount = u32_at(entry + 4)? as usize;
+        if tag == 0x8769 && kind == 4 && amount == 1 {
+            exif_ifd = Some(u32_at(entry + 8)? as usize);
+        } else if tag == 0x0132 {
+            fallback = read_ascii_tag(bytes, entry, kind, amount, &u32_at);
+        }
+    }
+    if let Some(ifd) = exif_ifd {
+        let count = u16_at(ifd)? as usize;
+        for index in 0..count.min(512) {
+            let entry = ifd.checked_add(2)?.checked_add(index.checked_mul(12)?)?;
+            let tag = u16_at(entry)?;
+            if (tag == 0x9003 || tag == 0x9004)
+                && let Some(value) = read_ascii_tag(
+                    bytes,
+                    entry,
+                    u16_at(entry + 2)?,
+                    u32_at(entry + 4)? as usize,
+                    &u32_at,
+                )
+                && valid_exif_date(&value)
+            {
+                return Some(value);
+            }
+        }
+    }
+    fallback.filter(|value| valid_exif_date(value))
+}
+
+fn read_ascii_tag(
+    bytes: &[u8],
+    entry: usize,
+    kind: u16,
+    count: usize,
+    u32_at: &impl Fn(usize) -> Option<u32>,
+) -> Option<String> {
+    if kind != 2 || count == 0 || count > 64 {
+        return None;
+    }
+    let offset = if count <= 4 {
+        entry.checked_add(8)?
+    } else {
+        u32_at(entry + 8)? as usize
+    };
+    let raw = bytes.get(offset..offset.checked_add(count)?)?;
+    let value = String::from_utf8_lossy(raw)
+        .trim_matches(char::from(0))
+        .trim()
+        .to_owned();
+    Some(value)
+}
+
+fn valid_exif_date(value: &str) -> bool {
+    let b = value.as_bytes();
+    b.len() == 19
+        && [4, 7, 10, 13, 16]
+            .iter()
+            .all(|i| matches!(b[*i], b':' | b' '))
+        && b.iter()
+            .enumerate()
+            .all(|(i, c)| [4, 7, 10, 13, 16].contains(&i) || c.is_ascii_digit())
+}
+
 pub const THUMB_PX: u32 = 360;
 
 fn key(path: &Path, meta: &std::fs::Metadata) -> String {
@@ -139,5 +281,34 @@ pub fn clean_tmp() {
         for e in rd.flatten() {
             let _ = std::fs::remove_file(e.path());
         }
+    }
+}
+
+#[cfg(test)]
+mod exif_tests {
+    use super::exif_capture_date;
+
+    #[test]
+    fn reads_jpeg_exif_original_capture_time() {
+        let mut tiff = b"II\x2a\0\x08\0\0\0\x01\0".to_vec();
+        tiff.extend_from_slice(&[0x69, 0x87, 4, 0, 1, 0, 0, 0, 26, 0, 0, 0]);
+        tiff.extend_from_slice(&[0; 4]);
+        tiff.extend_from_slice(&[1, 0, 0x03, 0x90, 2, 0, 20, 0, 0, 0, 44, 0, 0, 0]);
+        tiff.extend_from_slice(&[0; 4]);
+        tiff.extend_from_slice(b"2024:02:03 04:05:06\0");
+        let mut jpeg = vec![0xff, 0xd8, 0xff, 0xe1];
+        let segment_len = (tiff.len() + 8) as u16;
+        jpeg.extend_from_slice(&segment_len.to_be_bytes());
+        jpeg.extend_from_slice(b"Exif\0\0");
+        jpeg.extend_from_slice(&tiff);
+        jpeg.extend_from_slice(&[0xff, 0xd9]);
+        let path =
+            std::env::temp_dir().join(format!("holodrive-exif-{}.jpg", crate::auth::random_hex(4)));
+        std::fs::write(&path, jpeg).unwrap();
+        assert_eq!(
+            exif_capture_date(&path).as_deref(),
+            Some("2024:02:03 04:05:06")
+        );
+        std::fs::remove_file(path).unwrap();
     }
 }
