@@ -201,6 +201,7 @@ $("#login-form").addEventListener("submit", async (ev) => {
 });
 
 $("#logout-btn").addEventListener("click", async () => {
+  if (ghostPortTimer) { clearInterval(ghostPortTimer); ghostPortTimer = null; }
   await api("POST", "/api/logout").catch(() => {});
   CSRF = null; showLogin();
 });
@@ -214,6 +215,42 @@ async function enterApp() {
   await loadRoots();
   refreshTrashCount();
   await route();
+  refreshGhostPort();
+  if (!ghostPortTimer) ghostPortTimer = setInterval(refreshGhostPort, 30000);
+}
+
+let ghostPortTimer = null;
+let ghostPortState = null;
+async function refreshGhostPort() {
+  try {
+    ghostPortState = await api("GET", "/api/integrations/ghostport/status");
+    const up = ghostPortState.available && !!ghostPortState.snapshot?.control_connected;
+    const button = $("#ghostport-status-btn");
+    button.dataset.state = up ? "up" : "down";
+    $("#ghostport-status-label").textContent = up ? "TUNNEL UP" : "TUNNEL IDLE";
+    button.title = up ? "GhostPort connected" : "GhostPort unavailable or disconnected";
+  } catch (_) {
+    ghostPortState = null;
+    $("#ghostport-status-btn").dataset.state = "down";
+    $("#ghostport-status-label").textContent = "TUNNEL ?";
+  }
+}
+
+function showGhostPortStatus() {
+  const snapshot = ghostPortState?.snapshot;
+  const connected = !!snapshot?.control_connected;
+  const body = snapshot
+    ? h("div", { class: "props" },
+        h("div", { class: "prop-row" }, h("span", { class: "prop-key", text: "Control channel" }), h("span", { class: "prop-val", text: connected ? "Connected" : "Disconnected" })),
+        h("div", { class: "prop-row" }, h("span", { class: "prop-key", text: "Role" }), h("span", { class: "prop-val", text: snapshot.role || "Unknown" })),
+        h("div", { class: "prop-row" }, h("span", { class: "prop-key", text: "Uptime" }), h("span", { class: "prop-val", text: `${Math.floor((snapshot.uptime_secs || 0) / 3600)}h ${Math.floor(((snapshot.uptime_secs || 0) % 3600) / 60)}m` })),
+        ...(snapshot.links || []).map((link) => h("div", { class: "prop-row" }, h("span", { class: "prop-key", text: `${link.id} · ${link.mode}` }), h("span", { class: "prop-val", text: `${link.active_streams} active · ${fmtSize(link.bytes_forward + link.bytes_back)} relayed` })))
+      )
+    : h("p", { class: "muted", text: ghostPortState?.reason === "daemon_unavailable" ? "GhostPort is not running or its local status socket is unavailable." : "GhostPort status is unavailable. Check that HOLODRIVE and GhostPort can read the same owner-only status socket." });
+  modal("GhostPort tunnel status", body, [
+    h("button", { class: "btn", type: "button", text: "Refresh", onclick: async () => { await refreshGhostPort(); showGhostPortStatus(); } }),
+    h("button", { class: "btn btn-primary", type: "button", text: "Done", onclick: closeModal })
+  ]);
 }
 
 // ── drives sidebar ─────────────────────────────────────────────────────
@@ -2215,6 +2252,7 @@ function wireApp() {
     if (!ev.target.closest(".dropdown-wrap")) { $("#theme-menu").hidden = true; $("#theme-btn").setAttribute("aria-expanded", "false"); }
   });
   $("#modal-close").addEventListener("click", closeModal);
+  $("#ghostport-status-btn").addEventListener("click", () => { refreshGhostPort().finally(showGhostPortStatus); });
   $("#modal").addEventListener("click", (ev) => { if (ev.target.id === "modal") closeModal(); });
   $("#viewer-close").addEventListener("click", closeViewer);
   $("#viewer-prev").addEventListener("click", () => viewerStep(-1));
