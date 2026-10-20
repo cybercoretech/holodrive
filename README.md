@@ -19,8 +19,16 @@ Cybercore. One Rust binary, no database, no Node.
 - **Photos library.** Open Photos in the sidebar to browse raster images across
   a drive, grouped by year, without changing where files are stored. Select a
   drive, open images in the existing lightbox, and download selections. Scans
-  skip hidden content and links, and stop at a fixed safety limit on very large
+  use JPEG EXIF capture dates when available (otherwise modified time), skip
+  hidden content and links, and stop at a fixed safety limit on very large
   drives.
+- **Live folders and phone handoff.** Open folders refresh themselves when
+  files arrive through Samba or another local app. From a folder, **📱 Send to
+  phone** shows a QR code and copies a `holodrive://` folder link; Holodrive Photos opens that
+  folder on the phone after sign-in. Recent folder changes, uploads, and sync
+  summaries appear in the shared Activity view on web and Android. The Android
+  app refreshes its visible
+  folder while it is in the foreground.
 - **Lightbox.** Pictures with zoom (wheel, double-click, pinch), drag to pan,
   swipe or ←/→ between them, and a filmstrip. Videos stream with seeking; audio
   plays on a spinning disc; PDFs open inline.
