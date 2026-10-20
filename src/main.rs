@@ -3,10 +3,13 @@
 //! Serves on 127.0.0.1 (default :8768); `tailscale serve` publishes it to
 //! the tailnet. Config: ~/.config/holodrive/config.toml.
 
+mod activity;
 mod auth;
 mod config;
 mod cybergrid;
+mod cybervault;
 mod fsops;
+mod ghostport;
 mod jsonfile;
 mod links;
 mod media;
@@ -204,6 +207,7 @@ async fn serve(path: PathBuf) {
     let state = Arc::new(web::AppState {
         port: cfg.port(),
         auth: auth::Auth::new(cfg.session_days),
+        activity: activity::Store::default(),
         cfg: Arc::new(cfg),
         thumbs: tokio::sync::Semaphore::new(2),
         stopping: stop_rx.clone(),

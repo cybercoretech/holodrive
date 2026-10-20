@@ -19,8 +19,16 @@ Cybercore. One Rust binary, no database, no Node.
 - **Photos library.** Open Photos in the sidebar to browse raster images across
   a drive, grouped by year, without changing where files are stored. Select a
   drive, open images in the existing lightbox, and download selections. Scans
-  skip hidden content and links, and stop at a fixed safety limit on very large
+  use JPEG EXIF capture dates when available (otherwise modified time), skip
+  hidden content and links, and stop at a fixed safety limit on very large
   drives.
+- **Live folders and phone handoff.** Open folders refresh themselves when
+  files arrive through Samba or another local app. From a folder, **📱 Send to
+  phone** shows a QR code and copies a `holodrive://` folder link; Holodrive Photos opens that
+  folder on the phone after sign-in. Recent folder changes, uploads, and sync
+  summaries appear in the shared Activity view on web and Android. The Android
+  app refreshes its visible
+  folder while it is in the foreground.
 - **Lightbox.** Pictures with zoom (wheel, double-click, pinch), drag to pan,
   swipe or ←/→ between them, and a filmstrip. Videos stream with seeking; audio
   plays on a spinning disc; PDFs open inline.
@@ -210,6 +218,25 @@ browser session.
 ```sh
 curl -H "Authorization: Bearer $TOKEN" http://blackbox.tail1234.ts.net:8768/api/roots
 ```
+
+### 🔐 GhostPort tunnel status
+
+`GET /api/integrations/ghostport/status` returns read-only connection health
+(`status/v1`) and is available to a Holodrive session or device token. The
+server reads GhostPort's owner-only Unix socket locally; peer addresses and
+names are removed from the response. Run both daemons as the same OS user,
+or set `GHOSTPORT_STATUS_SOCKET` in the Holodrive service environment for a
+nonstandard socket path. The endpoint cannot change GhostPort configuration
+or control its tunnels.
+
+### 🗝️ CyberVault share storage
+
+Create a protected link and save its URL and passphrase into CyberVault from
+the web or Android app. Run `cybervault bridge` in a local terminal on the
+server first; the bridge requires local master-password unlock and auto-locks
+after five idle minutes. Only password-based HOLODRIVE sessions can append a
+share secret; device tokens cannot. See
+[`docs/integrations/cybervault.md`](docs/integrations/cybervault.md).
 
 ## ⬆️ Resumable upload API
 

@@ -14,15 +14,20 @@
 use crate::auth::{self, Auth, LoginBrake};
 use crate::config::Config;
 use crate::fsops::{self, FsError};
-use crate::{cybergrid, links, media, samba, smbconf, snapshots, tokens, uploads, views};
+use crate::{
+    activity, cybergrid, cybervault, ghostport, links, media, samba, smbconf, snapshots, tokens,
+    uploads, views,
+};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use futures_util::StreamExt;
+use futures_util::stream;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -39,6 +44,7 @@ pub struct AppState {
     pub stopping: tokio::sync::watch::Receiver<bool>,
     /// The theme catalog's revision (see `cybergrid::watch_revision`).
     pub themes: tokio::sync::watch::Receiver<Option<u64>>,
+    pub activity: activity::Store,
     /// Resumable uploads with a chunk being written right now.
     pub sending: std::sync::Mutex<std::collections::HashSet<String>>,
     pub tokens: tokens::Store,
@@ -46,6 +52,21 @@ pub struct AppState {
 }
 
 type Shared = Arc<AppState>;
+
+async fn ghostport_status() -> Json<ghostport::IntegrationStatus> {
+    Json(ghostport::status().await)
+}
+
+async fn cybervault_status() -> Json<cybervault::Status> {
+    Json(cybervault::status().await)
+}
+
+async fn cybervault_store(Json(body): Json<cybervault::StoreRequest>) -> Response {
+    match cybervault::store(body).await {
+        Ok(reply) => Json(reply).into_response(),
+        Err(reason) => err(503, reason),
+    }
+}
 
 pub fn router(state: Shared) -> Router {
     Router::new()
@@ -56,11 +77,20 @@ pub fn router(state: Shared) -> Router {
         .route("/api/cybergrid/themes", get(cybergrid::list_themes))
         .route("/api/cybergrid/events", get(cybergrid::theme_events))
         .route("/api/cybergrid/css/:name", get(cybergrid::theme_css))
+        .route("/api/integrations/ghostport/status", get(ghostport_status))
+        .route(
+            "/api/integrations/cybervault/status",
+            get(cybervault_status),
+        )
+        .route("/api/integrations/cybervault/store", post(cybervault_store))
         .route("/api/session", get(session))
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
         .route("/api/roots", get(roots))
         .route("/api/list", get(list))
+        .route("/api/events", get(folder_events))
+        .route("/api/qr", get(folder_qr))
+        .route("/api/activity", get(activity_recent).post(activity_record))
         .route("/api/photos", get(photos))
         .route("/api/stat", get(stat))
         .route("/api/exists", get(exists))
@@ -166,7 +196,12 @@ fn origin_label(req: &Request) -> String {
 }
 
 /// Only a browser session (or this PC) may manage Samba and device tokens.
-const SESSION_ONLY: &[&str] = &["/api/samba", "/api/tokens", "/api/links"];
+const SESSION_ONLY: &[&str] = &[
+    "/api/samba",
+    "/api/tokens",
+    "/api/links",
+    "/api/integrations/cybervault",
+];
 
 fn session_id(req: &Request) -> Option<String> {
     let cookies = req.headers().get(header::COOKIE)?.to_str().ok()?;
@@ -436,6 +471,11 @@ struct SearchQ {
     q: String,
 }
 
+#[derive(Deserialize)]
+struct QrQ {
+    path: String,
+}
+
 async fn roots(State(s): State<Shared>) -> Response {
     let cfg = s.cfg.clone();
     reply!(blocking(move || Ok(fsops::roots(&cfg))))
@@ -444,6 +484,197 @@ async fn roots(State(s): State<Shared>) -> Response {
 async fn list(State(s): State<Shared>, Query(q): Query<PathQ>) -> Response {
     let cfg = s.cfg.clone();
     reply!(blocking(move || fsops::list(&cfg, &q.path)))
+}
+
+async fn activity_recent(State(s): State<Shared>) -> Json<Vec<activity::Item>> {
+    Json(s.activity.recent())
+}
+
+#[derive(Deserialize)]
+struct ActivityBody {
+    kind: String,
+    path: String,
+    detail: String,
+}
+
+async fn activity_record(State(s): State<Shared>, Json(body): Json<ActivityBody>) -> Response {
+    if !matches!(
+        body.kind.as_str(),
+        "upload" | "sync" | "restore" | "trash" | "error"
+    ) || body.path.is_empty()
+        || body.path.len() > 2048
+        || body.detail.len() > 240
+        || body.detail.chars().any(char::is_control)
+    {
+        return err(400, "invalid activity record");
+    }
+    let mut parts = body.path.split('/');
+    let Some(root_id) = parts.next() else {
+        return err(400, "invalid activity path");
+    };
+    if s.cfg.root(root_id).is_none()
+        || parts.any(|part| part.is_empty() || fsops::check_name(part).is_err())
+    {
+        return err(400, "invalid activity path");
+    }
+    s.activity.record(&body.kind, &body.path, &body.detail);
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// Watch one currently-open folder and notify clients when its listing changes.
+/// A bounded per-connection poll keeps this compatible with changes made by
+/// Samba and other local programs, which do not pass through Holodrive APIs.
+async fn folder_events(State(s): State<Shared>, Query(q): Query<PathQ>) -> Response {
+    let cfg = s.cfg.clone();
+    let path = q.path;
+    let initial_path = path.clone();
+    let initial_cfg = cfg.clone();
+    let initial = match blocking(move || fsops::list(&initial_cfg, &initial_path)).await {
+        Ok(listing) => listing,
+        Err(response) => return response,
+    };
+    let mut stopping = s.stopping.clone();
+    let activity = s.activity.clone();
+    let events = stream::unfold(
+        (
+            cfg,
+            path,
+            activity,
+            Some(initial),
+            tokio::time::interval(std::time::Duration::from_secs(2)),
+        ),
+        |(cfg, path, activity, mut previous, mut tick)| async move {
+            loop {
+                tick.tick().await;
+                let watch_cfg = cfg.clone();
+                let watch_path = path.clone();
+                let Ok(Ok(current)) =
+                    tokio::task::spawn_blocking(move || fsops::list(&watch_cfg, &watch_path)).await
+                else {
+                    continue;
+                };
+                if previous.as_ref() != Some(&current) {
+                    let old = previous
+                        .as_ref()
+                        .and_then(|listing| listing["entries"].as_array());
+                    let new = current["entries"].as_array();
+                    let old_by_name: std::collections::BTreeMap<_, _> = old
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|entry| {
+                            Some((entry["name"].as_str()?.to_owned(), entry.clone()))
+                        })
+                        .collect();
+                    let new_by_name: std::collections::BTreeMap<_, _> = new
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|entry| {
+                            Some((entry["name"].as_str()?.to_owned(), entry.clone()))
+                        })
+                        .collect();
+                    let added: Vec<_> = new_by_name
+                        .keys()
+                        .filter(|name| !old_by_name.contains_key(*name))
+                        .cloned()
+                        .collect();
+                    let removed: Vec<_> = old_by_name
+                        .keys()
+                        .filter(|name| !new_by_name.contains_key(*name))
+                        .cloned()
+                        .collect();
+                    let updated: Vec<_> = new_by_name
+                        .iter()
+                        .filter_map(|(name, entry)| {
+                            old_by_name
+                                .get(name)
+                                .filter(|old| *old != entry)
+                                .map(|_| name.clone())
+                        })
+                        .collect();
+                    let payload = serde_json::json!({
+                        "path": path,
+                        "added": added,
+                        "updated": updated,
+                        "removed": removed,
+                    });
+                    let detail = format!(
+                        "+{} ~{} -{}",
+                        payload["added"].as_array().map_or(0, Vec::len),
+                        payload["updated"].as_array().map_or(0, Vec::len),
+                        payload["removed"].as_array().map_or(0, Vec::len),
+                    );
+                    activity.record("folder-change", &path, &detail);
+                    previous = Some(current);
+                    let event = Event::default()
+                        .event("folder-change")
+                        .data(payload.to_string());
+                    return Some((
+                        Ok::<_, std::convert::Infallible>(event),
+                        (cfg, path, activity, previous, tick),
+                    ));
+                }
+            }
+        },
+    );
+    let events = events.take_until(async move {
+        let _ = stopping.wait_for(|stop| *stop).await;
+    });
+    Sse::new(events)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+async fn folder_qr(State(s): State<Shared>, Query(q): Query<QrQ>) -> Response {
+    let cfg = s.cfg.clone();
+    let path = q.path;
+    let check_cfg = cfg.clone();
+    let check_path = path.clone();
+    if let Err(response) = blocking(move || fsops::list(&check_cfg, &check_path)).await {
+        return response;
+    }
+    let link = format!("holodrive://open?path={}", pct(&path));
+    let generated = tokio::task::spawn_blocking(move || {
+        use std::io::Write;
+        let mut child = std::process::Command::new("qrencode")
+            .args(["-t", "SVG", "-o", "-"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|_| {
+                "QR generator unavailable; install qrencode or copy the folder link".to_string()
+            })?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| "could not start QR generator".to_string())?
+            .write_all(link.as_bytes())
+            .map_err(|e| e.to_string())?;
+        let output = child.wait_with_output().map_err(|e| e.to_string())?;
+        if output.status.success() {
+            Ok(output.stdout)
+        } else {
+            Err("QR generation failed".to_string())
+        }
+    })
+    .await;
+    let svg = match generated {
+        Ok(Ok(svg)) => svg,
+        Ok(Err(message)) => return err(503, message),
+        Err(error) => return err(500, error),
+    };
+    (
+        [
+            (header::CONTENT_TYPE, "image/svg+xml; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+            (
+                axum::http::HeaderName::from_static("content-security-policy"),
+                "sandbox; default-src 'none'",
+            ),
+        ],
+        Body::from(svg),
+    )
+        .into_response()
 }
 
 async fn photos(State(s): State<Shared>, Query(q): Query<PathQ>) -> Response {
@@ -811,7 +1042,12 @@ struct UploadQ {
 /// The body is the raw file. It streams to a spool file on the same drive
 /// (see `uploads`) and is moved into place only when complete.
 async fn upload(State(s): State<Shared>, Query(q): Query<UploadQ>, body: Body) -> Response {
-    store_upload(s.cfg.clone(), q.dir, q.name, q.overwrite.is_some(), body).await
+    let path = format!("{}/{}", q.dir.trim_end_matches('/'), q.name);
+    let response = store_upload(s.cfg.clone(), q.dir, q.name, q.overwrite.is_some(), body).await;
+    if response.status().is_success() {
+        s.activity.record("upload", &path, "Uploaded");
+    }
+    response
 }
 
 async fn store_upload(
@@ -894,7 +1130,16 @@ async fn upload_status(State(s): State<Shared>, Query(q): Query<IdQ>) -> Respons
 
 async fn upload_finish(State(s): State<Shared>, Json(b): Json<IdQ>) -> Response {
     let cfg = s.cfg.clone();
-    reply!(blocking(move || uploads::finish(&cfg, &b.id)))
+    let result = blocking(move || uploads::finish(&cfg, &b.id)).await;
+    match result {
+        Ok(value) => {
+            if let Some(path) = value.get("path").and_then(Value::as_str) {
+                s.activity.record("upload", path, "Uploaded");
+            }
+            Json(value).into_response()
+        }
+        Err(response) => response,
+    }
 }
 
 async fn upload_cancel(State(s): State<Shared>, Json(b): Json<IdQ>) -> Response {
@@ -1315,6 +1560,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shared_activity_accepts_valid_records_and_rejects_invalid_paths() {
+        let dir = std::env::temp_dir().join(format!("holodrive-activity-{}", auth::random_hex(4)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = Config::starter();
+        cfg.password_hash = "configured".into();
+        cfg.local_auth_bypass = true;
+        cfg.roots = vec![crate::config::Root {
+            id: "a".into(),
+            name: "A".into(),
+            path: dir.clone(),
+            icon: String::new(),
+            writable: true,
+        }];
+        let app = router(Arc::new(AppState {
+            cfg: Arc::new(cfg),
+            auth: Auth::new(30),
+            port: 8768,
+            thumbs: tokio::sync::Semaphore::new(2),
+            stopping: tokio::sync::watch::channel(false).1,
+            themes: tokio::sync::watch::channel(None).1,
+            activity: activity::Store::default(),
+            sending: Default::default(),
+            tokens: crate::tokens::Store::memory(),
+            links: crate::links::Store::memory(),
+        }));
+        let record = |path: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/api/activity")
+                .header(header::HOST, "127.0.0.1:8768")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    json!({"kind":"sync","path":path,"detail":"2 downloaded"}).to_string(),
+                ))
+                .unwrap()
+        };
+        let good = app.clone().oneshot(record("a/Movies")).await.unwrap();
+        assert_eq!(good.status(), StatusCode::OK);
+        let bad = app.clone().oneshot(record("a/../secret")).await.unwrap();
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+        let recent = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/activity")
+                    .header(header::HOST, "127.0.0.1:8768")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(recent.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let items: Vec<Value> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["path"], "a/Movies");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn chunked_upload_resumes_and_refuses_bad_offsets() {
         let dir = std::env::temp_dir().join(format!("holodrive-web-up-{}", auth::random_hex(4)));
         std::fs::create_dir_all(dir.join("a")).unwrap();
@@ -1335,6 +1640,7 @@ mod tests {
             thumbs: tokio::sync::Semaphore::new(2),
             stopping: tokio::sync::watch::channel(false).1,
             themes: tokio::sync::watch::channel(None).1,
+            activity: activity::Store::default(),
             sending: Default::default(),
             tokens: crate::tokens::Store::memory(),
             links: crate::links::Store::memory(),
@@ -1440,6 +1746,7 @@ mod tests {
             thumbs: tokio::sync::Semaphore::new(2),
             stopping: tokio::sync::watch::channel(false).1,
             themes: tokio::sync::watch::channel(None).1,
+            activity: activity::Store::default(),
             sending: Default::default(),
             tokens: store,
             links: crate::links::Store::memory(),
@@ -1473,6 +1780,19 @@ mod tests {
         assert_eq!(
             status(call("GET", "/api/roots", Some(&full), None).await.unwrap()),
             StatusCode::OK
+        );
+        assert_eq!(
+            status(
+                call(
+                    "POST",
+                    "/api/integrations/cybervault/store",
+                    Some(&full),
+                    Some(json!({"label":"share", "secret":"sensitive"})),
+                )
+                .await
+                .unwrap()
+            ),
+            StatusCode::FORBIDDEN
         );
         // No CSRF header needed with a bearer token.
         assert_eq!(
@@ -1559,6 +1879,7 @@ mod tests {
             thumbs: tokio::sync::Semaphore::new(2),
             stopping: tokio::sync::watch::channel(false).1,
             themes: tokio::sync::watch::channel(None).1,
+            activity: activity::Store::default(),
             sending: Default::default(),
             tokens: crate::tokens::Store::memory(),
             links: crate::links::Store::memory(),
@@ -1712,6 +2033,7 @@ mod tests {
             thumbs: tokio::sync::Semaphore::new(2),
             stopping: stop_rx,
             themes: theme_rx,
+            activity: activity::Store::default(),
             sending: Default::default(),
             tokens: crate::tokens::Store::memory(),
             links: crate::links::Store::memory(),
@@ -1748,6 +2070,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn folder_events_detect_external_changes_and_stop_on_shutdown() {
+        let dir = std::env::temp_dir().join(format!("holodrive-events-{}", auth::random_hex(4)));
+        let root = dir.join("drive");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut cfg = Config::starter();
+        cfg.password_hash = "configured".into();
+        cfg.local_auth_bypass = true;
+        cfg.roots = vec![crate::config::Root {
+            id: "a".into(),
+            name: "A".into(),
+            path: root.clone(),
+            icon: String::new(),
+            writable: true,
+        }];
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let state = Arc::new(AppState {
+            cfg: Arc::new(cfg),
+            auth: Auth::new(30),
+            port: 8768,
+            thumbs: tokio::sync::Semaphore::new(2),
+            stopping: stop_rx,
+            themes: tokio::sync::watch::channel(None).1,
+            activity: activity::Store::default(),
+            sending: Default::default(),
+            tokens: crate::tokens::Store::memory(),
+            links: crate::links::Store::memory(),
+        });
+        let res = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/events?path=a")
+                    .header(header::HOST, "127.0.0.1:8768")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let mut body = res.into_body().into_data_stream();
+        std::fs::write(root.join("arrived-from-samba.txt"), "hello").unwrap();
+        let chunk = tokio::time::timeout(std::time::Duration::from_secs(3), body.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&chunk).contains("folder-change"));
+        stop_tx.send(true).unwrap();
+        let end = tokio::time::timeout(std::time::Duration::from_secs(1), body.next()).await;
+        assert!(end.expect("stream still open after shutdown").is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn folder_qr_returns_a_scannable_local_deep_link() {
+        if std::process::Command::new("qrencode")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("holodrive-qr-{}", auth::random_hex(4)));
+        let root = dir.join("drive");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut cfg = Config::starter();
+        cfg.password_hash = "configured".into();
+        cfg.local_auth_bypass = true;
+        cfg.roots = vec![crate::config::Root {
+            id: "a".into(),
+            name: "A".into(),
+            path: root,
+            icon: String::new(),
+            writable: true,
+        }];
+        let state = Arc::new(AppState {
+            cfg: Arc::new(cfg),
+            auth: Auth::new(30),
+            port: 8768,
+            thumbs: tokio::sync::Semaphore::new(2),
+            stopping: tokio::sync::watch::channel(false).1,
+            themes: tokio::sync::watch::channel(None).1,
+            activity: activity::Store::default(),
+            sending: Default::default(),
+            tokens: crate::tokens::Store::memory(),
+            links: crate::links::Store::memory(),
+        });
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/qr?path=a")
+                    .header(header::HOST, "127.0.0.1:8768")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "image/svg+xml; charset=utf-8"
+        );
+        let svg = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&svg).contains("<svg"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
     async fn trusted_local_access_skips_login_but_tailnet_still_requires_it() {
         let mut cfg = Config::starter();
         cfg.password_hash = "configured".into();
@@ -1760,6 +2191,7 @@ mod tests {
             thumbs: tokio::sync::Semaphore::new(2),
             stopping: tokio::sync::watch::channel(false).1,
             themes: tokio::sync::watch::channel(None).1,
+            activity: activity::Store::default(),
             sending: Default::default(),
             tokens: crate::tokens::Store::memory(),
             links: crate::links::Store::memory(),
