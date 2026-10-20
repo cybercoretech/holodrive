@@ -1595,6 +1595,7 @@ function linkDialog(e) {
   const pw = h("input", { class: "text-input", type: "password", placeholder: "optional", autocomplete: "new-password" });
   const max = h("input", { class: "text-input", type: "number", min: "1", placeholder: "unlimited" });
   const label = h("input", { class: "text-input", placeholder: e.name, maxlength: "80" });
+  const vaultLabel = h("input", { class: "text-input", value: `HOLODRIVE · ${e.name}`, maxlength: "128" });
   const row = (l, el) => h("label", { class: "field" }, h("span", { class: "field-label", text: l }), el);
   const create = async () => {
     let l;
@@ -1603,12 +1604,29 @@ function linkDialog(e) {
         max_downloads: max.value ? +max.value : null, label: label.value || null });
     } catch (err) { fail(err); return; }
     const url = linkUrl(l);
+    const saveToCyberVault = async () => {
+      try {
+        const saved = await api("POST", "/api/integrations/cybervault/store", {
+          label: vaultLabel.value.trim(),
+          secret: `Link: ${url}\nPassphrase: ${pw.value}`,
+        });
+        if (!saved.stored) throw new Error(saved.reason === "label_exists" ? "That CyberVault label already exists. Choose a new title and create a new entry." : `CyberVault could not save this share (${saved.reason || "bridge unavailable"}). Start cybervault bridge on the server and try again.`);
+        toast(`🔐 Saved to CyberVault as ${saved.label}`, "ok");
+        closeModal();
+      } catch (err) {
+        if (err.message?.includes("bridge") || err.message?.includes("CyberVault")) fail(err);
+        else fail(new Error("CyberVault is unavailable. Start `cybervault bridge` on the server, then retry."));
+      }
+    };
     modal("Share link ready", h("div", { class: "field" },
       h("span", { class: "field-label", text: `${l.mode === "drop" ? "drop box" : "link"} for ${l.name}` }),
       h("code", { class: "token-secret", text: url }),
+      row("CyberVault entry label", vaultLabel),
+      h("span", { class: "muted", text: "CyberVault must be unlocked locally with `cybervault bridge`. The saved entry contains the link and passphrase." }),
       h("span", { class: "muted", text: [l.expires ? "expires " + fmtDate(l.expires) : "never expires", l.password ? "password protected" : null,
         l.max_downloads ? `${l.max_downloads} download${l.max_downloads > 1 ? "s" : ""}` : null, "works on your tailnet"].filter(Boolean).join(" · ") })),
     [h("a", { class: "btn", href: "#/links", text: "🔗 All links", onclick: closeModal }),
+      h("button", { class: "btn", type: "button", text: "🔐 Save to CyberVault", onclick: saveToCyberVault }),
       h("button", { class: "btn btn-primary", type: "button", text: "📋 Copy link", onclick: () => { copyText(url, "link"); closeModal(); } })]);
   };
   modal(`Share ${e.name}`, h("form", { class: "field", onsubmit: (ev) => { ev.preventDefault(); create(); } },

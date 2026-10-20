@@ -15,7 +15,8 @@ use crate::auth::{self, Auth, LoginBrake};
 use crate::config::Config;
 use crate::fsops::{self, FsError};
 use crate::{
-    cybergrid, ghostport, links, media, samba, smbconf, snapshots, tokens, uploads, views,
+    cybergrid, cybervault, ghostport, links, media, samba, smbconf, snapshots, tokens, uploads,
+    views,
 };
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
@@ -53,6 +54,17 @@ async fn ghostport_status() -> Json<ghostport::IntegrationStatus> {
     Json(ghostport::status().await)
 }
 
+async fn cybervault_status() -> Json<cybervault::Status> {
+    Json(cybervault::status().await)
+}
+
+async fn cybervault_store(Json(body): Json<cybervault::StoreRequest>) -> Response {
+    match cybervault::store(body).await {
+        Ok(reply) => Json(reply).into_response(),
+        Err(reason) => err(503, reason),
+    }
+}
+
 pub fn router(state: Shared) -> Router {
     Router::new()
         .route("/", get(index))
@@ -63,6 +75,11 @@ pub fn router(state: Shared) -> Router {
         .route("/api/cybergrid/events", get(cybergrid::theme_events))
         .route("/api/cybergrid/css/:name", get(cybergrid::theme_css))
         .route("/api/integrations/ghostport/status", get(ghostport_status))
+        .route(
+            "/api/integrations/cybervault/status",
+            get(cybervault_status),
+        )
+        .route("/api/integrations/cybervault/store", post(cybervault_store))
         .route("/api/session", get(session))
         .route("/api/login", post(login))
         .route("/api/logout", post(logout))
@@ -173,7 +190,12 @@ fn origin_label(req: &Request) -> String {
 }
 
 /// Only a browser session (or this PC) may manage Samba and device tokens.
-const SESSION_ONLY: &[&str] = &["/api/samba", "/api/tokens", "/api/links"];
+const SESSION_ONLY: &[&str] = &[
+    "/api/samba",
+    "/api/tokens",
+    "/api/links",
+    "/api/integrations/cybervault",
+];
 
 fn session_id(req: &Request) -> Option<String> {
     let cookies = req.headers().get(header::COOKIE)?.to_str().ok()?;
@@ -1480,6 +1502,19 @@ mod tests {
         assert_eq!(
             status(call("GET", "/api/roots", Some(&full), None).await.unwrap()),
             StatusCode::OK
+        );
+        assert_eq!(
+            status(
+                call(
+                    "POST",
+                    "/api/integrations/cybervault/store",
+                    Some(&full),
+                    Some(json!({"label":"share", "secret":"sensitive"})),
+                )
+                .await
+                .unwrap()
+            ),
+            StatusCode::FORBIDDEN
         );
         // No CSRF header needed with a bearer token.
         assert_eq!(

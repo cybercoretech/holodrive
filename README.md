@@ -221,6 +221,15 @@ or set `GHOSTPORT_STATUS_SOCKET` in the Holodrive service environment for a
 nonstandard socket path. The endpoint cannot change GhostPort configuration
 or control its tunnels.
 
+### 🗝️ CyberVault share storage
+
+Create a protected link and save its URL and passphrase into CyberVault from
+the web or Android app. Run `cybervault bridge` in a local terminal on the
+server first; the bridge requires local master-password unlock and auto-locks
+after five idle minutes. Only password-based HOLODRIVE sessions can append a
+share secret; device tokens cannot. See
+[`docs/integrations/cybervault.md`](docs/integrations/cybervault.md).
+
 ## ⬆️ Resumable upload API
 
 For apps and scripts (the web page uses it for big files). Send a device
