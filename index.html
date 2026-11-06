@@ -8,6 +8,9 @@
   <title>Holodrive — Your files, in your orbit</title>
   <link rel="icon" href="static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://cybercoretech.github.io/kit/chooser.css">
+  <script>window.SITE = Object.assign(window.SITE || {}, {"defaultTheme": "cybercore-tech"});</script>
+  <script type="module" src="https://cybercoretech.github.io/kit/chooser.js"></script>
 </head>
 <body>
   <header class="site-header">
@@ -23,9 +26,7 @@
     <a data-cybercore-master-docs href="https://cybercoretech.github.io/cybercore/docs.html" style="color:#22e6ff;border:1px solid #263454;border-radius:999px;padding:7px 12px;text-decoration:none;font:600 .7rem ui-monospace,monospace;letter-spacing:.08em;white-space:nowrap">MASTER DOCS ↗</a></nav>
     <div class="theme-picker">
       <span class="theme-label">CYBERGRID</span>
-      <button id="themeButton" class="theme-button" type="button" aria-haspopup="listbox" aria-expanded="false" aria-controls="themeMenu">LOADING THEMES…</button>
-      <div id="themeMenu" class="theme-menu" role="listbox" aria-label="Choose a Cybercore theme" hidden></div>
-      <select id="themeSelect" aria-label="Choose a Cybercore theme" tabindex="-1"></select>
+      <cybercore-theme-chooser adopt><button id="themeButton" class="theme-button" type="button">Cybercore Tech</button></cybercore-theme-chooser>
     </div>
   </header>
 
@@ -100,7 +101,7 @@
   </section>
 
   <footer><span>HOLODRIVE / YOUR FILES, IN YOUR ORBIT</span><span>BUILT WITH <a href="https://github.com/cybercoretech/cybercore">CYBERCORE</a> · OPEN SOURCE</span></footer>
-  <script src="app.js"></script>
+  <script src="app.js?v=universal-chooser-1"></script>
   <script type="module" src="https://cybercoretech.github.io/kit/contact.js"></script>
 </body>
 </html>
