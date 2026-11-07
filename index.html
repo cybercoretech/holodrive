@@ -11,6 +11,113 @@
   <link rel="stylesheet" href="https://cybercoretech.github.io/kit/chooser.css">
   <script>window.SITE = Object.assign(window.SITE || {}, {"defaultTheme": "cybercore-tech"});</script>
   <script type="module" src="https://cybercoretech.github.io/kit/chooser.js"></script>
+  <style id="cc-mobile-first">
+/* Mobile floor (phones + tablets): readable text and finger-sized targets.
+   Generated per range from what renders under 11px / 24px; desktop untouched. */
+@media (max-width: 600px) {
+  span.theme-label,
+  p.eyebrow,
+  a.button,
+  p.signal,
+  div.preview-head > span,
+  div.preview-head > b,
+  div.preview-foot > span,
+  span.feature-index,
+  article.feature > a,
+  figcaption,
+  div.android-install > div > a,
+  div.android-install > div > span,
+  div.android-command > span,
+  button.copy-command,
+  div.android-command > a,
+  p.android-detail-link > a,
+  li,
+  div.connect-links > a > span,
+  a > i,
+  footer > span,
+  span > a { font-size: 11px !important; }
+}
+@media (min-width: 601px) and (max-width: 860px) {
+  span.theme-label,
+  p.eyebrow,
+  a.button,
+  p.signal,
+  div.preview-head > span,
+  div.preview-head > b,
+  div.preview-foot > span,
+  span.feature-index,
+  article.feature > a,
+  figcaption,
+  div.android-install > div > a,
+  div.android-install > div > span,
+  div.android-command > span,
+  button.copy-command,
+  div.android-command > a,
+  p.android-detail-link > a,
+  li,
+  div.connect-links > a > span,
+  a > i,
+  footer > span,
+  span > a { font-size: 11px !important; }
+}
+@media (min-width: 861px) and (max-width: 1024px) {
+  span.theme-label,
+  p.eyebrow,
+  a.button,
+  p.signal,
+  div.preview-head > span,
+  div.preview-head > b,
+  div.preview-foot > span,
+  span.feature-index,
+  article.feature > a,
+  figcaption,
+  div.android-install > div > a,
+  div.android-install > div > span,
+  div.android-command > span,
+  button.copy-command,
+  div.android-command > a,
+  p.android-detail-link > a,
+  li,
+  div.connect-links > a > span,
+  a > i,
+  footer > span,
+  span > a { font-size: 11px !important; }
+}
+@media (pointer: coarse) {
+  button.copy-command,
+  div.android-command > a { min-height: 24px; min-width: 24px; }
+  article.feature > a,
+  span > a { display: inline-flex; align-items: center; min-height: 24px; min-width: 24px; }
+}
+/* Mobile floor (phones + tablets): readable text and finger-sized targets.
+   Generated per range from what renders under 11px / 24px; desktop untouched. */
+@media (max-width: 600px) {
+  nav.main-nav > a:not([data-cybercore-master-docs]) { font-size: 11px !important; }
+}
+@media (min-width: 601px) and (max-width: 860px) {
+  nav.main-nav > a:not([data-cybercore-master-docs]) { font-size: 11px !important; }
+}
+@media (min-width: 861px) and (max-width: 1024px) {
+  nav.main-nav > a:not([data-cybercore-master-docs]) { font-size: 11px !important; }
+}
+/* Layout fixes: phones and tablets only; laptops and desktops untouched. */
+@media (max-width: 1024px) {
+  /* Mobile first: nothing may make the page wider than the screen.
+     Grid/flex columns may shrink below their widest line; code scrolls in place. */
+  pre { max-width: 100%; overflow-x: auto; }
+  img, video { max-width: 100%; height: auto; }
+  /* Long paths and URLs in inline code may break anywhere instead of widening the page. */
+  :not(pre) > code { overflow-wrap: anywhere; }
+  /* Phones: the nav row wraps onto centred lines instead of running past the edge. */
+  @media (max-width: 600px) { .main-nav { flex-wrap: wrap; justify-content: center; column-gap: 16px; row-gap: 6px; } }
+  /* Touch: nav links get a 24px target. */
+  .main-nav a { display: inline-flex; align-items: center; min-height: 24px; }
+  /* Phones: the wrapped header is ~181px; pinned it would take a quarter of the
+     screen, so there it scrolls away with the page. The APK link is a 24px target. */
+  @media (max-width: 600px) { .site-header { position: relative; } }
+  a[href$="holodrive-photos.apk"] { display: inline-flex; align-items: center; min-height: 24px; }
+}
+  </style>
 </head>
 <body>
   <header class="site-header">
